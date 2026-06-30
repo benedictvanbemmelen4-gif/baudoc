@@ -3,6 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+// Plattform-spezifischer CSV-Export (Web-Download vs. Teilen-Dialog).
+import 'csv_export_io.dart'
+    if (dart.library.js_interop) 'csv_export_web.dart';
+
 // ===================================================================
 // BauDoc – Flutter/Dart-Portierung des HTML-Prototyps
 // Eine Datei, damit der Einstieg einfach bleibt. Später gern aufteilen.
@@ -563,10 +567,12 @@ class _LoginScreenState extends State<LoginScreen> {
                         DropdownButtonFormField<String>(
                           initialValue: userId,
                           dropdownColor: kCard2,
+                          isExpanded: true,
                           items: Store.I.users
                               .map((u) => DropdownMenuItem(
                                   value: u.id,
-                                  child: Text('${u.name} — ${u.role}')))
+                                  child: Text('${u.name} — ${u.role}',
+                                      overflow: TextOverflow.ellipsis)))
                               .toList(),
                           onChanged: (v) => setState(() => userId = v),
                         ),
@@ -678,8 +684,9 @@ class _HomeScreenState extends State<HomeScreen> {
           var list = s.projects
               .where((p) => tab == 'offen' ? p.isOpen : !p.isOpen)
               .toList();
-          if (filter != null)
+          if (filter != null) {
             list = list.where((p) => p.type == filter).toList();
+          }
           if (query.trim().isNotEmpty) {
             final q = query.trim().toLowerCase();
             list = list
@@ -1685,6 +1692,70 @@ Widget _saveBtn(String label, VoidCallback onTap) => Padding(
       ),
     );
 
+// ---- CSV-Export ----
+String _csvCell(String s) {
+  if (s.contains('"') ||
+      s.contains(';') ||
+      s.contains(',') ||
+      s.contains('\n')) {
+    return '"${s.replaceAll('"', '""')}"';
+  }
+  return s;
+}
+
+String _num(num n) => n.toStringAsFixed(2).replaceAll('.', ',');
+
+// Eine Zeile pro Auftrag, inkl. Stunden- und Materialkosten-Summe.
+// Semikolon als Trenner + Dezimalkomma → öffnet sauber in deutschem Excel.
+String buildProjectsCsv() {
+  const sep = ';';
+  final rows = <String>[];
+  rows.add([
+    'Auftrag',
+    'Art/Gewerk',
+    'Adresse',
+    'Status',
+    'Start',
+    'Fällig',
+    'Stunden gesamt',
+    'Materialkosten (€)',
+    'Aufgaben erledigt',
+    'Aufgaben gesamt',
+  ].map(_csvCell).join(sep));
+  for (final p in Store.I.projects) {
+    final totalH = p.hours.fold<double>(0, (s, e) => s + e.h);
+    final matCost = p.materials.fold<double>(0, (s, e) => s + e.qty * e.price);
+    final doneTasks = p.tasks.where((t) => t.done).length;
+    rows.add([
+      p.name,
+      p.type,
+      p.address,
+      p.isOpen ? 'Aktiv' : 'Abgeschlossen',
+      dLong(p.date),
+      dLong(p.due),
+      _num(totalH),
+      _num(matCost),
+      '$doneTasks',
+      '${p.tasks.length}',
+    ].map(_csvCell).join(sep));
+  }
+  return rows.join('\r\n');
+}
+
+Future<void> exportProjectsCsv(BuildContext context) async {
+  if (Store.I.projects.isEmpty) {
+    snack(context, 'Keine Aufträge zum Exportieren.');
+    return;
+  }
+  final fname = 'baudoc_auftraege_${today()}.csv';
+  try {
+    await downloadCsv(fname, buildProjectsCsv());
+    if (context.mounted) snack(context, 'CSV-Export erstellt: $fname');
+  } catch (e) {
+    if (context.mounted) snack(context, 'Export fehlgeschlagen: $e');
+  }
+}
+
 // ---- Profil ----
 void showProfileSheet(BuildContext context) {
   final u = Store.I.currentUser!;
@@ -1723,6 +1794,18 @@ void showProfileSheet(BuildContext context) {
               },
               leading: const Icon(Icons.euro, color: kViolet),
               title: const Text('Material-Preise verwalten'),
+              tileColor: kCard,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14)),
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              onTap: () async {
+                Navigator.pop(ctx);
+                await exportProjectsCsv(context);
+              },
+              leading: const Icon(Icons.download, color: kBlue),
+              title: const Text('Aufträge als CSV exportieren'),
               tileColor: kCard,
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(14)),
@@ -1782,71 +1865,6 @@ void showPinForm(BuildContext context) {
             Store.I.save();
             Navigator.pop(ctx);
           }),
-        ]);
-  });
-}
-
-// ---- Einstellungen ----
-void showSettingsSheet(BuildContext context) {
-  final u = Store.I.currentUser!;
-  _sheet(context, (ctx) {
-    return Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('Einstellungen',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-                color: kAccent.withValues(alpha: .1),
-                borderRadius: BorderRadius.circular(11),
-                border: Border.all(color: kAccent.withValues(alpha: .3))),
-            child: Row(children: [
-              const Icon(Icons.person_outline, color: kAccent, size: 18),
-              const SizedBox(width: 8),
-              Expanded(
-                  child: Text('Angemeldet als ${u.name} · ${u.role}',
-                      style: const TextStyle(color: kAccent))),
-            ]),
-          ),
-          if (Store.I.canAdmin)
-            Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: ListTile(
-                onTap: () {
-                  Navigator.pop(ctx);
-                  Navigator.push(context,
-                      MaterialPageRoute(builder: (_) => const AdminScreen()));
-                },
-                leading: const Icon(Icons.euro, color: kViolet),
-                title: const Text('Material-Preise verwalten'),
-                tileColor: kCard,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14)),
-              ),
-            )
-          else
-            const Padding(
-              padding: EdgeInsets.only(top: 12),
-              child: Text(
-                  'Die Verwaltung (Material-Preise) ist nur für die Rolle „Büro/Buchhaltung" sichtbar.',
-                  style: TextStyle(color: kMuted, fontSize: 12)),
-            ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: TextButton.icon(
-              style: TextButton.styleFrom(foregroundColor: kRed),
-              icon: const Icon(Icons.logout),
-              label: const Text('Abmelden'),
-              onPressed: () {
-                Navigator.pop(ctx);
-                Store.I.logout();
-              },
-            ),
-          ),
         ]);
   });
 }
