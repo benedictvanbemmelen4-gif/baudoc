@@ -1707,7 +1707,7 @@ String _num(num n) => n.toStringAsFixed(2).replaceAll('.', ',');
 
 // Eine Zeile pro Auftrag, inkl. Stunden- und Materialkosten-Summe.
 // Semikolon als Trenner + Dezimalkomma → öffnet sauber in deutschem Excel.
-String buildProjectsCsv() {
+String buildProjectsCsv(List<Project> projects) {
   const sep = ';';
   final rows = <String>[];
   rows.add([
@@ -1722,7 +1722,7 @@ String buildProjectsCsv() {
     'Aufgaben erledigt',
     'Aufgaben gesamt',
   ].map(_csvCell).join(sep));
-  for (final p in Store.I.projects) {
+  for (final p in projects) {
     final totalH = p.hours.fold<double>(0, (s, e) => s + e.h);
     final matCost = p.materials.fold<double>(0, (s, e) => s + e.qty * e.price);
     final doneTasks = p.tasks.where((t) => t.done).length;
@@ -1742,18 +1742,205 @@ String buildProjectsCsv() {
   return rows.join('\r\n');
 }
 
+// Auswahl-Sheet: nach Gewerk / Status / Zeitraum filtern und exportieren.
 Future<void> exportProjectsCsv(BuildContext context) async {
-  if (Store.I.projects.isEmpty) {
+  final all = Store.I.projects;
+  if (all.isEmpty) {
     snack(context, 'Keine Aufträge zum Exportieren.');
     return;
   }
-  final fname = 'baudoc_auftraege_${today()}.csv';
-  try {
-    await downloadCsv(fname, buildProjectsCsv());
-    if (context.mounted) snack(context, 'CSV-Export erstellt: $fname');
-  } catch (e) {
-    if (context.mounted) snack(context, 'Export fehlgeschlagen: $e');
-  }
+  // Zustand überlebt setSt-Rebuilds, daher außerhalb des Builders.
+  String? gewerk; // null = alle Gewerke
+  String statusF = 'alle'; // 'alle' | 'offen' | 'done'
+  String von = ''; // ISO yyyy-MM-dd, '' = unbegrenzt (filtert auf Startdatum)
+  String bis = '';
+  final selected = all.map((p) => p.id).toSet(); // Standard: alle ausgewählt
+
+  await _sheet(context, (ctx) {
+    return StatefulBuilder(builder: (ctx, setSt) {
+      List<Project> visible() => all.where((p) {
+            if (gewerk != null && p.type != gewerk) return false;
+            if (statusF == 'offen' && !p.isOpen) return false;
+            if (statusF == 'done' && p.isOpen) return false;
+            if (von.isNotEmpty &&
+                (p.date.isEmpty || p.date.compareTo(von) < 0)) {
+              return false;
+            }
+            if (bis.isNotEmpty &&
+                (p.date.isEmpty || p.date.compareTo(bis) > 0)) {
+              return false;
+            }
+            return true;
+          }).toList();
+
+      // Bei Filteränderung sichtbare Aufträge automatisch komplett auswählen.
+      void applyFilter(VoidCallback change) => setSt(() {
+            change();
+            selected
+              ..clear()
+              ..addAll(visible().map((p) => p.id));
+          });
+
+      final vis = visible();
+      final selCount = vis.where((p) => selected.contains(p.id)).length;
+      final hasFilter =
+          gewerk != null || statusF != 'alle' || von.isNotEmpty || bis.isNotEmpty;
+
+      InputDecoration dense(String label) => InputDecoration(
+            labelText: label,
+            isDense: true,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          );
+
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Aufträge exportieren',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          Text('$selCount von ${vis.length} ausgewählt',
+              style: const TextStyle(color: kMuted, fontSize: 13)),
+          const SizedBox(height: 12),
+          // ---- Filter ----
+          Row(children: [
+            Expanded(
+              child: DropdownButtonFormField<String?>(
+                initialValue: gewerk,
+                isExpanded: true,
+                dropdownColor: kCard2,
+                decoration: dense('Gewerk'),
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('Alle')),
+                  ...arten.map((a) => DropdownMenuItem(value: a, child: Text(a))),
+                ],
+                onChanged: (v) => applyFilter(() => gewerk = v),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: DropdownButtonFormField<String>(
+                initialValue: statusF,
+                isExpanded: true,
+                dropdownColor: kCard2,
+                decoration: dense('Status'),
+                items: const [
+                  DropdownMenuItem(value: 'alle', child: Text('Alle')),
+                  DropdownMenuItem(value: 'offen', child: Text('Offen')),
+                  DropdownMenuItem(value: 'done', child: Text('Abgeschl.')),
+                ],
+                onChanged: (v) => applyFilter(() => statusF = v ?? 'alle'),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(
+              child: _pickField('Von', von, () async {
+                final r = await pickDate(ctx, von.isEmpty ? today() : von);
+                if (r != null) applyFilter(() => von = r);
+              }),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _pickField('Bis', bis, () async {
+                final r = await pickDate(ctx, bis.isEmpty ? today() : bis);
+                if (r != null) applyFilter(() => bis = r);
+              }),
+            ),
+          ]),
+          if (hasFilter)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                style: TextButton.styleFrom(foregroundColor: kMuted),
+                icon: const Icon(Icons.clear, size: 16),
+                label: const Text('Filter zurücksetzen'),
+                onPressed: () => applyFilter(() {
+                  gewerk = null;
+                  statusF = 'alle';
+                  von = '';
+                  bis = '';
+                }),
+              ),
+            ),
+          const SizedBox(height: 4),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            activeColor: kAccent,
+            checkColor: kAccentInk,
+            value: vis.isNotEmpty && selCount == vis.length,
+            title: const Text('Alle auswählen',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+            onChanged: vis.isEmpty
+                ? null
+                : (v) => setSt(() {
+                      final ids = vis.map((p) => p.id);
+                      if (v == true) {
+                        selected.addAll(ids);
+                      } else {
+                        selected.removeAll(ids);
+                      }
+                    }),
+          ),
+          const Divider(color: kLine, height: 1),
+          // ---- Liste (gefiltert, scrollbar) ----
+          Flexible(
+            child: vis.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Text('Keine Aufträge für diesen Filter.',
+                        style: TextStyle(color: kMuted)))
+                : ListView(
+                    shrinkWrap: true,
+                    children: vis.map((p) {
+                      return CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        activeColor: kAccent,
+                        checkColor: kAccentInk,
+                        value: selected.contains(p.id),
+                        title: Text(p.name,
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                        subtitle: Text(
+                            '${p.type}${p.address.isEmpty ? '' : ' · ${p.address}'}'
+                            '${p.date.isEmpty ? '' : ' · ${dLong(p.date)}'}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style:
+                                const TextStyle(color: kMuted, fontSize: 12)),
+                        onChanged: (v) => setSt(() {
+                          if (v == true) {
+                            selected.add(p.id);
+                          } else {
+                            selected.remove(p.id);
+                          }
+                        }),
+                      );
+                    }).toList(),
+                  ),
+          ),
+          _saveBtn('CSV exportieren', () async {
+            final chosen = vis.where((p) => selected.contains(p.id)).toList();
+            if (chosen.isEmpty) {
+              snack(ctx, 'Bitte mindestens einen Auftrag wählen.');
+              return;
+            }
+            final fname = 'baudoc_auftraege_${today()}.csv';
+            Navigator.pop(ctx);
+            try {
+              await downloadCsv(fname, buildProjectsCsv(chosen));
+              if (context.mounted) snack(context, 'CSV-Export erstellt: $fname');
+            } catch (e) {
+              if (context.mounted) snack(context, 'Export fehlgeschlagen: $e');
+            }
+          }),
+        ],
+      );
+    });
+  });
 }
 
 // ---- Profil ----
