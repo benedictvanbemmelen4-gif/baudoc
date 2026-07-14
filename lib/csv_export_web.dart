@@ -23,3 +23,21 @@ Future<void> downloadCsv(String filename, String content) async {
   anchor.remove();
   web.URL.revokeObjectURL(url);
 }
+
+// Web: lädt beliebige Binärdaten (z.B. PDF) als Datei herunter.
+Future<void> downloadBytes(
+    String filename, Uint8List bytes, String mimeType) async {
+  final blob = web.Blob(
+    <JSAny>[bytes.toJS].toJS,
+    web.BlobPropertyBag(type: mimeType),
+  );
+  final url = web.URL.createObjectURL(blob);
+  final anchor = web.HTMLAnchorElement()
+    ..href = url
+    ..download = filename
+    ..style.display = 'none';
+  web.document.body!.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  web.URL.revokeObjectURL(url);
+}

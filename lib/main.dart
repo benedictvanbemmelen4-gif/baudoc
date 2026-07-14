@@ -3,9 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// Plattform-spezifischer CSV-Export (Web-Download vs. Teilen-Dialog).
+// Plattform-spezifischer Datei-Export (Web-Download vs. Teilen-Dialog).
 import 'csv_export_io.dart'
     if (dart.library.js_interop) 'csv_export_web.dart';
+import 'pdf_invoice.dart';
 
 // ===================================================================
 // BauDoc – Flutter/Dart-Portierung des HTML-Prototyps
@@ -28,7 +29,9 @@ const kBlue = Color(0xFF4F9DFF);
 const kViolet = Color(0xFFA78BFA);
 const kRed = Color(0xFFEF5F55);
 
-const arten = [
+// Standard-Kategorien (Gewerke) – nur zum Erstbefüllen. Zur Laufzeit ist die
+// Liste über Store.I.arten pro Firma bearbeitbar und wird persistiert.
+const defaultArten = [
   'Solaranlage',
   'Wärmepumpe',
   'Heizung',
@@ -267,6 +270,7 @@ class Store extends ChangeNotifier {
   List<CatalogItem> catalog = [];
   List<Project> projects = [];
   List<AppUser> users = [];
+  List<String> arten = List.of(defaultArten); // Kategorien/Gewerke (bearbeitbar)
   bool online = true;
   bool _adminSeeded = false;
   String? sessionId;
@@ -330,6 +334,7 @@ class Store extends ChangeNotifier {
         'catalog': catalog.map((e) => e.toJson()).toList(),
         'projects': projects.map((e) => e.toJson()).toList(),
         'users': users.map((e) => e.toJson()).toList(),
+        'arten': arten,
         'online': online,
         'adminSeeded': _adminSeeded,
       };
@@ -343,6 +348,11 @@ class Store extends ChangeNotifier {
         .toList();
     users =
         ((j['users'] ?? []) as List).map((e) => AppUser.fromJson(e)).toList();
+    // Migration: ältere Datenstände ohne 'arten' bekommen die Standardliste.
+    final rawArten = (j['arten'] as List?)?.cast<String>();
+    arten = (rawArten == null || rawArten.isEmpty)
+        ? List.of(defaultArten)
+        : rawArten;
     online = j['online'] ?? true;
     _adminSeeded = j['adminSeeded'] ?? false;
   }
@@ -369,6 +379,7 @@ class Store extends ChangeNotifier {
   void _seed() {
     catalog = _defaultCatalog();
     users = _defaultUsers();
+    arten = List.of(defaultArten);
     projects = [
       Project(
         id: uid(),
@@ -703,6 +714,15 @@ class _HomeScreenState extends State<HomeScreen> {
               s.projects.where((p) => tab == 'offen' ? p.isOpen : !p.isOpen);
           int countFor(String t) =>
               tabProjects.where((p) => p.type == t).length;
+          // Chips nur für Kategorien, die im aktuellen Tab vorkommen –
+          // Store-Reihenfolge zuerst, unbekannte Typen (z. B. gelöschte
+          // Kategorie, aber noch am Auftrag) hinten angehängt.
+          final present =
+              tabProjects.map((p) => p.type).where((t) => t.isNotEmpty).toSet();
+          final chipCats = <String>[
+            ...s.arten.where(present.contains),
+            ...present.where((t) => !s.arten.contains(t)),
+          ];
 
           return Column(
             children: [
@@ -748,7 +768,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     _chip('Alle', filter == null,
                         () => setState(() => filter = null),
                         count: tabProjects.length),
-                    for (final t in arten)
+                    for (final t in chipCats)
                       _chip(t, filter == t,
                           () => setState(() => filter = t),
                           count: countFor(t)),
@@ -1005,7 +1025,13 @@ class ProjectScreen extends StatelessWidget {
         }
         final done = p.tasks.where((t) => t.done).length;
         return Scaffold(
-          appBar: AppBar(title: Text(p.name)),
+          appBar: AppBar(title: Text(p.name), actions: [
+            IconButton(
+              icon: const Icon(Icons.picture_as_pdf_outlined),
+              tooltip: 'Als PDF exportieren',
+              onPressed: () => exportProjectPdf(context, p),
+            ),
+          ]),
           body: ListView(
             padding: const EdgeInsets.fromLTRB(14, 14, 14, 30),
             children: [
@@ -1537,6 +1563,39 @@ class AdminScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 10),
+              const _SectionTitle('Kategorien / Gewerke'),
+              Card(
+                margin: EdgeInsets.zero,
+                child: Column(
+                  children: s.arten.map((a) {
+                    final used = s.projects.where((p) => p.type == a).length;
+                    return ListTile(
+                      onTap: () => showCategoryForm(context, a),
+                      leading: const Icon(Icons.category_outlined, color: kBlue),
+                      title: Text(a),
+                      subtitle: Text(
+                          used == 0
+                              ? 'Nicht verwendet'
+                              : '$used Auftrag${used == 1 ? '' : 'e'}',
+                          style: const TextStyle(color: kMuted)),
+                      trailing: IconButton(
+                        icon:
+                            const Icon(Icons.delete_outline, color: kMuted),
+                        onPressed: () => _delCategory(context, a),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  icon: const Icon(Icons.add),
+                  label: const Text('Kategorie hinzufügen'),
+                  onPressed: () => showCategoryForm(context, null),
+                ),
+              ),
+              const SizedBox(height: 10),
               const _SectionTitle('Benutzer'),
               Card(
                 margin: EdgeInsets.zero,
@@ -1572,6 +1631,25 @@ class AdminScreen extends StatelessWidget {
         );
       },
     );
+  }
+
+  void _delCategory(BuildContext context, String a) async {
+    final s = Store.I;
+    final used = s.projects.where((p) => p.type == a).length;
+    if (used > 0) {
+      snack(context,
+          'Kategorie wird von $used Auftrag${used == 1 ? '' : 'en'} genutzt und kann nicht gelöscht werden.');
+      return;
+    }
+    if (s.arten.length <= 1) {
+      snack(context, 'Es muss mindestens eine Kategorie bleiben.');
+      return;
+    }
+    final ok = await confirm(context, 'Kategorie „$a" wirklich löschen?');
+    if (ok) {
+      s.arten.remove(a);
+      s.save();
+    }
   }
 
   void _delUser(BuildContext context, AppUser u) async {
@@ -1691,6 +1769,50 @@ Widget _saveBtn(String label, VoidCallback onTap) => Padding(
         ),
       ),
     );
+
+// ---- PDF-Export (Leistungsnachweis / Rechnung pro Auftrag) ----
+String _fileSlug(String s) {
+  final slug = s
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+      .replaceAll(RegExp(r'^_+|_+$'), '');
+  return slug.isEmpty ? 'auftrag' : slug;
+}
+
+Future<void> exportProjectPdf(BuildContext context, Project p) async {
+  final ctrl = TextEditingController();
+  await _sheet(context, (ctx) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('PDF exportieren',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
+        const Text('Leistungsnachweis / Rechnung für diesen Auftrag.',
+            style: TextStyle(color: kMuted, fontSize: 13)),
+        _label('Stundensatz (€/h, optional)'),
+        TextField(
+          controller: ctrl,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(
+            hintText: 'z.B. 45 – leer lassen für nur Stundenanzahl',
+            isDense: true,
+          ),
+        ),
+        _saveBtn('PDF erstellen', () async {
+          final satz =
+              double.tryParse(ctrl.text.trim().replaceAll(',', '.')) ?? 0;
+          Navigator.pop(ctx);
+          final bytes = await buildProjectInvoicePdf(p, stundensatz: satz);
+          final fname = 'baudoc_${_fileSlug(p.name)}_${today()}.pdf';
+          await downloadBytes(fname, bytes, 'application/pdf');
+          if (context.mounted) snack(context, 'PDF erstellt: $fname');
+        }),
+      ],
+    );
+  });
+}
 
 // ---- CSV-Export ----
 String _csvCell(String s) {
@@ -1813,7 +1935,8 @@ Future<void> exportProjectsCsv(BuildContext context) async {
                 decoration: dense('Gewerk'),
                 items: [
                   const DropdownMenuItem(value: null, child: Text('Alle')),
-                  ...arten.map((a) => DropdownMenuItem(value: a, child: Text(a))),
+                  ...Store.I.arten
+                      .map((a) => DropdownMenuItem(value: a, child: Text(a))),
                 ],
                 onChanged: (v) => applyFilter(() => gewerk = v),
               ),
@@ -1979,8 +2102,11 @@ void showProfileSheet(BuildContext context) {
                 Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const AdminScreen()));
               },
-              leading: const Icon(Icons.euro, color: kViolet),
-              title: const Text('Material-Preise verwalten'),
+              leading: const Icon(Icons.admin_panel_settings_outlined,
+                  color: kViolet),
+              title: const Text('Verwaltung'),
+              subtitle: const Text('Material-Preise, Kategorien, Benutzer',
+                  style: TextStyle(color: kMuted, fontSize: 12)),
               tileColor: kCard,
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(14)),
@@ -2060,7 +2186,7 @@ void showPinForm(BuildContext context) {
 void showProjectForm(BuildContext context) {
   final name = TextEditingController();
   final addr = TextEditingController();
-  String type = arten.first;
+  String type = Store.I.arten.isNotEmpty ? Store.I.arten.first : 'Sonstiges';
   String date = today();
   String due = '';
   _sheet(context, (ctx) {
@@ -2080,7 +2206,7 @@ void showProjectForm(BuildContext context) {
             DropdownButtonFormField<String>(
               initialValue: type,
               dropdownColor: kCard2,
-              items: arten
+              items: {...Store.I.arten, type}
                   .map((a) => DropdownMenuItem(value: a, child: Text(a)))
                   .toList(),
               onChanged: (v) => setSt(() => type = v!),
@@ -2276,6 +2402,51 @@ void showTaskForm(BuildContext context, Project p) {
 }
 
 // ---- Preis ----
+// ---- Kategorie / Gewerk ----
+void showCategoryForm(BuildContext context, String? existing) {
+  final ctrl = TextEditingController(text: existing ?? '');
+  _sheet(context, (ctx) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(existing == null ? 'Neue Kategorie' : 'Kategorie umbenennen',
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+        _label('Bezeichnung'),
+        TextField(
+          controller: ctrl,
+          autofocus: true,
+          textCapitalization: TextCapitalization.sentences,
+          decoration: const InputDecoration(hintText: 'z. B. Dachdecker'),
+        ),
+        _saveBtn('Speichern', () {
+          final name = ctrl.text.trim();
+          if (name.isEmpty) return;
+          final s = Store.I;
+          final dup = s.arten
+              .any((a) => a.toLowerCase() == name.toLowerCase() && a != existing);
+          if (dup) {
+            snack(context, 'Diese Kategorie gibt es bereits.');
+            return;
+          }
+          if (existing == null) {
+            s.arten.add(name);
+          } else if (existing != name) {
+            final i = s.arten.indexOf(existing);
+            if (i >= 0) s.arten[i] = name;
+            // Vorhandene Aufträge mit der alten Bezeichnung mit umbenennen.
+            for (final p in s.projects.where((p) => p.type == existing)) {
+              p.type = name;
+            }
+          }
+          s.save();
+          Navigator.pop(ctx);
+        }),
+      ],
+    );
+  });
+}
+
 void showCatalogForm(BuildContext context, CatalogItem? c) {
   final name = TextEditingController(text: c?.name ?? '');
   final price =

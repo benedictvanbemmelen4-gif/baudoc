@@ -15,3 +15,15 @@ Future<void> downloadCsv(String filename, String content) async {
     ),
   );
 }
+
+// Mobil/Desktop: beliebige Binärdaten (z.B. PDF) über den Teilen-Dialog ausgeben.
+Future<void> downloadBytes(
+    String filename, Uint8List bytes, String mimeType) async {
+  await SharePlus.instance.share(
+    ShareParams(
+      files: [XFile.fromData(bytes, mimeType: mimeType, name: filename)],
+      fileNameOverrides: [filename],
+      subject: filename,
+    ),
+  );
+}
