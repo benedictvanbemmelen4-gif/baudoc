@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'csv_export_io.dart'
     if (dart.library.js_interop) 'csv_export_web.dart';
 import 'pdf_invoice.dart';
+import 'weather.dart';
 
 // ===================================================================
 // BauDoc – Flutter/Dart-Portierung des HTML-Prototyps
@@ -41,7 +42,33 @@ const defaultArten = [
   'Neubau',
   'Sonstiges'
 ];
-const rollen = ['Baustelle', 'Büro/Buchhaltung', 'Administrator'];
+// Rollen sind zur Laufzeit über Store.roles frei bearbeitbar; diese Liste dient
+// nur dem Erstbefüllen. 'Administrator' ist geschützt und hat immer alle Rechte.
+const kAdminRole = 'Administrator';
+const defaultRollen = ['Administrator', 'Büro', 'Meister', 'Handwerker'];
+
+// Berechtigungen: Schlüssel → Anzeigename (erweiterbar). Jede Rolle bekommt in
+// Store.rolePerms eine Teilmenge davon zugewiesen.
+const kPerms = <String, String>{
+  'wages': 'Stundenlöhne verwalten',
+  'pauschalen': 'Pauschalen verwalten',
+  'materialPrices': 'Material-Preise verwalten',
+  'categories': 'Kategorien verwalten',
+  'usersRoles': 'Benutzer & Rollen verwalten',
+  'exportDocs': 'Rechnung / CSV exportieren',
+  'editProjects': 'Aufträge anlegen & bearbeiten',
+  'deleteProjects': 'Aufträge löschen',
+};
+// Diese Rechte machen den Verwaltungs-Bereich sichtbar.
+const kManagePerms = [
+  'pauschalen',
+  'materialPrices',
+  'categories',
+  'usersRoles'
+];
+// Legacy-Rollennamen → neue Rollen (einmalige Migration bestehender Daten).
+const _roleRename = {'Büro/Buchhaltung': 'Büro', 'Baustelle': 'Handwerker'};
+
 const einheiten = ['Stk', 'm', 'm²', 'm³', 'kg', 't', 'l', 'h', 'Pkt'];
 
 // ---------- Helfer ----------
@@ -91,15 +118,21 @@ String initials(String name) {
 // ---------- Modelle ----------
 class AppUser {
   String id, name, role, pin;
+  double wage; // Stundenlohn €/h (0 = nicht hinterlegt)
   AppUser(
       {required this.id,
       required this.name,
       required this.role,
-      required this.pin});
+      required this.pin,
+      this.wage = 0});
   Map<String, dynamic> toJson() =>
-      {'id': id, 'name': name, 'role': role, 'pin': pin};
-  factory AppUser.fromJson(Map<String, dynamic> j) =>
-      AppUser(id: j['id'], name: j['name'], role: j['role'], pin: j['pin']);
+      {'id': id, 'name': name, 'role': role, 'pin': pin, 'wage': wage};
+  factory AppUser.fromJson(Map<String, dynamic> j) => AppUser(
+      id: j['id'],
+      name: j['name'],
+      role: j['role'],
+      pin: j['pin'],
+      wage: (j['wage'] as num?)?.toDouble() ?? 0);
 }
 
 class CatalogItem {
@@ -117,6 +150,33 @@ class CatalogItem {
       name: j['name'],
       unit: j['unit'],
       price: (j['price'] as num).toDouble());
+}
+
+class Pauschale {
+  String id, name;
+  double amount;
+  Pauschale({required this.id, required this.name, required this.amount});
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'amount': amount};
+  factory Pauschale.fromJson(Map<String, dynamic> j) => Pauschale(
+      id: j['id'],
+      name: j['name'] ?? '',
+      amount: (j['amount'] as num?)?.toDouble() ?? 0);
+}
+
+class Customer {
+  String id, name, address, contact;
+  Customer(
+      {required this.id,
+      required this.name,
+      this.address = '',
+      this.contact = ''});
+  Map<String, dynamic> toJson() =>
+      {'id': id, 'name': name, 'address': address, 'contact': contact};
+  factory Customer.fromJson(Map<String, dynamic> j) => Customer(
+      id: j['id'],
+      name: j['name'] ?? '',
+      address: j['address'] ?? '',
+      contact: j['contact'] ?? '');
 }
 
 class WorkHours {
@@ -195,21 +255,56 @@ class Task {
       done: j['done'] ?? false);
 }
 
+class Defect {
+  String id, title, description, date;
+  bool done;
+  Defect(
+      {required this.id,
+      required this.title,
+      this.description = '',
+      this.date = '',
+      this.done = false});
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'description': description,
+        'date': date,
+        'done': done
+      };
+  factory Defect.fromJson(Map<String, dynamic> j) => Defect(
+      id: j['id'],
+      title: j['title'] ?? '',
+      description: j['description'] ?? '',
+      date: j['date'] ?? '',
+      done: j['done'] ?? false);
+}
+
 class Note {
-  String id, date, text;
-  Note({required this.id, required this.date, required this.text});
-  Map<String, dynamic> toJson() => {'id': id, 'date': date, 'text': text};
-  factory Note.fromJson(Map<String, dynamic> j) =>
-      Note(id: j['id'], date: j['date'] ?? '', text: j['text'] ?? '');
+  String id, date, text, weather, temp;
+  Note(
+      {required this.id,
+      required this.date,
+      required this.text,
+      this.weather = '',
+      this.temp = ''});
+  Map<String, dynamic> toJson() =>
+      {'id': id, 'date': date, 'text': text, 'weather': weather, 'temp': temp};
+  factory Note.fromJson(Map<String, dynamic> j) => Note(
+      id: j['id'],
+      date: j['date'] ?? '',
+      text: j['text'] ?? '',
+      weather: j['weather'] ?? '',
+      temp: j['temp'] ?? '');
 }
 
 class Project {
-  String id, name, type, address, status, date, due;
+  String id, name, type, address, status, date, due, customerId;
   List<WorkHours> hours;
   List<MaterialItem> materials;
   List<Task> tasks;
   List<Note> notes;
   List<String> photos;
+  List<Defect> defects;
   Project(
       {required this.id,
       required this.name,
@@ -221,10 +316,13 @@ class Project {
       required this.tasks,
       this.date = '',
       this.due = '',
+      this.customerId = '',
       List<Note>? notes,
-      List<String>? photos})
+      List<String>? photos,
+      List<Defect>? defects})
       : notes = notes ?? [],
-        photos = photos ?? [];
+        photos = photos ?? [],
+        defects = defects ?? [];
   bool get isOpen => status == 'active';
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -234,11 +332,13 @@ class Project {
         'status': status,
         'date': date,
         'due': due,
+        'customerId': customerId,
         'hours': hours.map((e) => e.toJson()).toList(),
         'materials': materials.map((e) => e.toJson()).toList(),
         'tasks': tasks.map((e) => e.toJson()).toList(),
         'notes': notes.map((e) => e.toJson()).toList(),
         'photos': photos,
+        'defects': defects.map((e) => e.toJson()).toList(),
       };
   factory Project.fromJson(Map<String, dynamic> j) => Project(
         id: j['id'],
@@ -248,6 +348,7 @@ class Project {
         status: j['status'] ?? 'active',
         date: j['date'] ?? '',
         due: j['due'] ?? '',
+        customerId: j['customerId'] ?? '',
         hours: ((j['hours'] ?? []) as List)
             .map((e) => WorkHours.fromJson(e))
             .toList(),
@@ -259,6 +360,9 @@ class Project {
         notes:
             ((j['notes'] ?? []) as List).map((e) => Note.fromJson(e)).toList(),
         photos: ((j['photos'] ?? []) as List).map((e) => e as String).toList(),
+        defects: ((j['defects'] ?? []) as List)
+            .map((e) => Defect.fromJson(e))
+            .toList(),
       );
 }
 
@@ -268,11 +372,16 @@ class Store extends ChangeNotifier {
   Store._();
 
   List<CatalogItem> catalog = [];
+  List<Customer> customers = [];
+  List<Pauschale> pauschalen = [];
   List<Project> projects = [];
   List<AppUser> users = [];
   List<String> arten = List.of(defaultArten); // Kategorien/Gewerke (bearbeitbar)
+  List<String> roles = List.of(defaultRollen); // Rollen (bearbeitbar)
+  Map<String, List<String>> rolePerms = {}; // Rolle → Rechte-Schlüssel
   bool online = true;
   bool _adminSeeded = false;
+  bool _rolesMigrated = false;
   String? sessionId;
   late SharedPreferences _p;
 
@@ -286,9 +395,30 @@ class Store extends ChangeNotifier {
     return null;
   }
 
-  bool get canAdmin =>
-      currentUser?.role == 'Büro/Buchhaltung' ||
-      currentUser?.role == 'Administrator';
+  // Hat der aktuelle Benutzer das Recht `perm`? Administrator immer alles.
+  bool can(String perm) {
+    final r = currentUser?.role;
+    if (r == null) return false;
+    if (r == kAdminRole) return true;
+    return (rolePerms[r] ?? const <String>[]).contains(perm);
+  }
+
+  // Verwaltungs-Bereich sichtbar?
+  bool get canManageAny => kManagePerms.any(can);
+
+  // Standard-Rechte für eine (neue) Rolle beim Erstbefüllen.
+  List<String> _defaultPermsFor(String role) {
+    switch (role) {
+      case kAdminRole:
+      case 'Büro':
+      case 'Büro/Buchhaltung':
+        return kPerms.keys.toList();
+      case 'Meister':
+        return ['exportDocs', 'editProjects', 'deleteProjects'];
+      default: // Handwerker, Baustelle, neue Rollen
+        return [];
+    }
+  }
 
   Future<void> load() async {
     _p = await SharedPreferences.getInstance();
@@ -314,6 +444,28 @@ class Store extends ChangeNotifier {
       _adminSeeded = true;
       save();
     }
+    // Einmalige Migration: alte Rollennamen auf das neue Rollen-Set abbilden.
+    if (!_rolesMigrated) {
+      for (final u in users) {
+        final mapped = _roleRename[u.role];
+        if (mapped != null) u.role = mapped;
+      }
+      roles = List.of(defaultRollen);
+      _rolesMigrated = true;
+      save();
+    }
+    // Sicherstellen: jede benutzte Rolle existiert und hat einen Rechte-Eintrag.
+    for (final u in users) {
+      if (!roles.contains(u.role)) roles.add(u.role);
+    }
+    var permsChanged = false;
+    for (final r in roles) {
+      if (!rolePerms.containsKey(r)) {
+        rolePerms[r] = _defaultPermsFor(r);
+        permsChanged = true;
+      }
+    }
+    if (permsChanged) save();
     sessionId = _p.getString(_skey);
   }
 
@@ -332,16 +484,27 @@ class Store extends ChangeNotifier {
 
   Map<String, dynamic> _toJson() => {
         'catalog': catalog.map((e) => e.toJson()).toList(),
+        'customers': customers.map((e) => e.toJson()).toList(),
+        'pauschalen': pauschalen.map((e) => e.toJson()).toList(),
         'projects': projects.map((e) => e.toJson()).toList(),
         'users': users.map((e) => e.toJson()).toList(),
         'arten': arten,
+        'roles': roles,
+        'rolePerms': rolePerms,
         'online': online,
         'adminSeeded': _adminSeeded,
+        'rolesMigrated': _rolesMigrated,
       };
 
   void _fromJson(Map<String, dynamic> j) {
     catalog = ((j['catalog'] ?? []) as List)
         .map((e) => CatalogItem.fromJson(e))
+        .toList();
+    customers = ((j['customers'] ?? []) as List)
+        .map((e) => Customer.fromJson(e))
+        .toList();
+    pauschalen = ((j['pauschalen'] ?? []) as List)
+        .map((e) => Pauschale.fromJson(e))
         .toList();
     projects = ((j['projects'] ?? []) as List)
         .map((e) => Project.fromJson(e))
@@ -353,8 +516,16 @@ class Store extends ChangeNotifier {
     arten = (rawArten == null || rawArten.isEmpty)
         ? List.of(defaultArten)
         : rawArten;
+    final rawRoles = (j['roles'] as List?)?.cast<String>();
+    roles = (rawRoles == null || rawRoles.isEmpty)
+        ? List.of(defaultRollen)
+        : rawRoles;
+    final rawPerms = (j['rolePerms'] as Map?) ?? {};
+    rolePerms = rawPerms.map((k, v) =>
+        MapEntry(k as String, ((v as List?) ?? const []).cast<String>()));
     online = j['online'] ?? true;
     _adminSeeded = j['adminSeeded'] ?? false;
+    _rolesMigrated = j['rolesMigrated'] ?? false;
   }
 
   List<CatalogItem> _defaultCatalog() => [
@@ -372,14 +543,43 @@ class Store extends ChangeNotifier {
             name: 'Administrator',
             role: 'Administrator',
             pin: '0000'),
-        AppUser(id: uid(), name: 'Bauleiter', role: 'Baustelle', pin: '1111'),
-        AppUser(id: uid(), name: 'Büro', role: 'Büro/Buchhaltung', pin: '2222'),
+        AppUser(
+            id: uid(),
+            name: 'Bauleiter',
+            role: 'Meister',
+            pin: '1111',
+            wage: 60),
+        AppUser(id: uid(), name: 'Büro', role: 'Büro', pin: '2222'),
+        AppUser(
+            id: uid(),
+            name: 'Max M.',
+            role: 'Handwerker',
+            pin: '3333',
+            wage: 45),
+      ];
+
+  Map<String, List<String>> _defaultRolePerms() =>
+      {for (final r in defaultRollen) r: _defaultPermsFor(r)};
+
+  List<Pauschale> _defaultPauschalen() => [
+        Pauschale(id: uid(), name: 'Anfahrtspauschale', amount: 50),
+        Pauschale(id: uid(), name: 'Kleinmaterial', amount: 30),
       ];
 
   void _seed() {
     catalog = _defaultCatalog();
     users = _defaultUsers();
     arten = List.of(defaultArten);
+    roles = List.of(defaultRollen);
+    rolePerms = _defaultRolePerms();
+    pauschalen = _defaultPauschalen();
+    _rolesMigrated = true;
+    final kunde = Customer(
+        id: uid(),
+        name: 'Familie Müller',
+        address: 'Müllerstr. 12, Speyer',
+        contact: '0621 123456');
+    customers = [kunde];
     projects = [
       Project(
         id: uid(),
@@ -387,6 +587,7 @@ class Store extends ChangeNotifier {
         type: 'Neubau',
         address: 'Müllerstr. 12, Speyer',
         status: 'active',
+        customerId: kunde.id,
         date: today(),
         hours: [
           WorkHours(
@@ -439,6 +640,14 @@ class Store extends ChangeNotifier {
   Project? projectById(String id) {
     for (final p in projects) {
       if (p.id == id) return p;
+    }
+    return null;
+  }
+
+  Customer? customerById(String id) {
+    if (id.isEmpty) return null;
+    for (final c in customers) {
+      if (c.id == id) return c;
     }
     return null;
   }
@@ -681,12 +890,14 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('Aufträge',
             style: TextStyle(fontWeight: FontWeight.w600)),
       ),
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: kAccent,
-        foregroundColor: kAccentInk,
-        onPressed: () => showProjectForm(context),
-        child: const Icon(Icons.add),
-      ),
+      floatingActionButton: Store.I.can('editProjects')
+          ? FloatingActionButton(
+              backgroundColor: kAccent,
+              foregroundColor: kAccentInk,
+              onPressed: () => showProjectForm(context),
+              child: const Icon(Icons.add),
+            )
+          : null,
       body: AnimatedBuilder(
         animation: s,
         builder: (_, __) {
@@ -1024,13 +1235,15 @@ class ProjectScreen extends StatelessWidget {
           return const Scaffold(body: SizedBox.shrink());
         }
         final done = p.tasks.where((t) => t.done).length;
+        final openDefects = p.defects.where((d) => !d.done).length;
         return Scaffold(
           appBar: AppBar(title: Text(p.name), actions: [
-            IconButton(
-              icon: const Icon(Icons.picture_as_pdf_outlined),
-              tooltip: 'Als PDF exportieren',
-              onPressed: () => exportProjectPdf(context, p),
-            ),
+            if (Store.I.can('exportDocs'))
+              IconButton(
+                icon: const Icon(Icons.picture_as_pdf_outlined),
+                tooltip: 'Als PDF exportieren',
+                onPressed: () => exportProjectPdf(context, p),
+              ),
           ]),
           body: ListView(
             padding: const EdgeInsets.fromLTRB(14, 14, 14, 30),
@@ -1057,6 +1270,9 @@ class ProjectScreen extends StatelessWidget {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
+                  if (Store.I.customerById(p.customerId) != null)
+                    _infoChip(Icons.badge_outlined,
+                        Store.I.customerById(p.customerId)!.name, kGreen),
                   if (p.date.isNotEmpty)
                     _infoChip(Icons.event, 'Start: ${dLong(p.date)}', kBlue),
                   if (p.due.isNotEmpty)
@@ -1106,6 +1322,19 @@ class ProjectScreen extends StatelessWidget {
                           context,
                           MaterialPageRoute(
                               builder: (_) => TasksScreen(projectId: p.id)))),
+                  const Divider(height: 1, color: kLine),
+                  _navTile(
+                      context,
+                      Icons.report_problem_outlined,
+                      kRed,
+                      'Mängel',
+                      p.defects.isEmpty
+                          ? 'Keine Mängel'
+                          : '$openDefects offen · ${p.defects.length} gesamt',
+                      () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => DefectsScreen(projectId: p.id)))),
                 ]),
               ),
               const SizedBox(height: 14),
@@ -1134,7 +1363,14 @@ class ProjectScreen extends StatelessWidget {
                     for (var i = p.notes.length - 1; i >= 0; i--) ...[
                       ListTile(
                         title: Text(p.notes[i].text),
-                        subtitle: Text(dLong(p.notes[i].date),
+                        subtitle: Text(
+                            [
+                              dLong(p.notes[i].date),
+                              if (p.notes[i].weather.isNotEmpty)
+                                [p.notes[i].weather, p.notes[i].temp]
+                                    .where((x) => x.isNotEmpty)
+                                    .join(', ')
+                            ].join(' · '),
                             style: const TextStyle(color: kMuted)),
                         trailing: IconButton(
                           icon:
@@ -1150,31 +1386,34 @@ class ProjectScreen extends StatelessWidget {
                   ]),
                 ),
               const SizedBox(height: 14),
-              OutlinedButton(
-                onPressed: () {
-                  p.status = p.isOpen ? 'done' : 'active';
-                  Store.I.save();
-                },
-                child: Text(p.isOpen
-                    ? 'Auftrag als abgeschlossen markieren'
-                    : 'Wieder als offen setzen'),
-              ),
-              const SizedBox(height: 8),
-              TextButton.icon(
-                style: TextButton.styleFrom(foregroundColor: kRed),
-                icon: const Icon(Icons.delete_outline),
-                label: const Text('Auftrag löschen'),
-                onPressed: () async {
-                  final ok = await confirm(context,
-                      'Auftrag wirklich löschen? Alle Einträge gehen verloren.');
-                  if (ok) {
-                    // Der AnimatedBuilder-Guard oben schließt den Screen automatisch,
-                    // sobald das Projekt entfernt ist (kein doppeltes pop).
-                    Store.I.projects.removeWhere((x) => x.id == p.id);
+              if (Store.I.can('editProjects'))
+                OutlinedButton(
+                  onPressed: () {
+                    p.status = p.isOpen ? 'done' : 'active';
                     Store.I.save();
-                  }
-                },
-              ),
+                  },
+                  child: Text(p.isOpen
+                      ? 'Auftrag als abgeschlossen markieren'
+                      : 'Wieder als offen setzen'),
+                ),
+              if (Store.I.can('deleteProjects')) ...[
+                const SizedBox(height: 8),
+                TextButton.icon(
+                  style: TextButton.styleFrom(foregroundColor: kRed),
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Auftrag löschen'),
+                  onPressed: () async {
+                    final ok = await confirm(context,
+                        'Auftrag wirklich löschen? Alle Einträge gehen verloren.');
+                    if (ok) {
+                      // Der AnimatedBuilder-Guard oben schließt den Screen automatisch,
+                      // sobald das Projekt entfernt ist (kein doppeltes pop).
+                      Store.I.projects.removeWhere((x) => x.id == p.id);
+                      Store.I.save();
+                    }
+                  },
+                ),
+              ],
             ],
           ),
         );
@@ -1512,6 +1751,81 @@ class TasksScreen extends StatelessWidget {
   }
 }
 
+// ---------- Mängel ----------
+class DefectsScreen extends StatelessWidget {
+  final String projectId;
+  const DefectsScreen({super.key, required this.projectId});
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: Store.I,
+      builder: (_, __) {
+        final p = Store.I.projectById(projectId);
+        if (p == null) return const Scaffold(body: SizedBox.shrink());
+        return Scaffold(
+          appBar: AppBar(title: const Text('Mängel')),
+          floatingActionButton: FloatingActionButton(
+            backgroundColor: kAccent,
+            foregroundColor: kAccentInk,
+            onPressed: () => showDefectForm(context, p, null),
+            child: const Icon(Icons.add),
+          ),
+          body: p.defects.isEmpty
+              ? const Center(
+                  child: Text('Keine Mängel erfasst.',
+                      style: TextStyle(color: kMuted)))
+              : ListView(
+                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 90),
+                  children: [
+                    Card(
+                      margin: EdgeInsets.zero,
+                      child: Column(
+                        children: p.defects
+                            .map((d) => ListTile(
+                                  leading: GestureDetector(
+                                    onTap: () {
+                                      d.done = !d.done;
+                                      Store.I.save();
+                                    },
+                                    child: Icon(
+                                        d.done
+                                            ? Icons.check_box
+                                            : Icons.check_box_outline_blank,
+                                        color: d.done ? kGreen : kRed),
+                                  ),
+                                  title: Text(d.title,
+                                      style: TextStyle(
+                                          decoration: d.done
+                                              ? TextDecoration.lineThrough
+                                              : null,
+                                          color: d.done ? kMuted : kInk)),
+                                  subtitle: d.description.isEmpty
+                                      ? null
+                                      : Text(d.description,
+                                          style:
+                                              const TextStyle(color: kMuted)),
+                                  onTap: () => showDefectForm(context, p, d),
+                                  trailing: IconButton(
+                                    icon: const Icon(Icons.delete_outline,
+                                        color: kMuted),
+                                    onPressed: () {
+                                      p.defects
+                                          .removeWhere((x) => x.id == d.id);
+                                      Store.I.save();
+                                    },
+                                  ),
+                                ))
+                            .toList(),
+                      ),
+                    ),
+                  ],
+                ),
+        );
+      },
+    );
+  }
+}
+
 // ---------- Verwaltung (rollen-gated) ----------
 class AdminScreen extends StatelessWidget {
   const AdminScreen({super.key});
@@ -1520,117 +1834,237 @@ class AdminScreen extends StatelessWidget {
     return AnimatedBuilder(
       animation: Store.I,
       builder: (_, __) {
-        if (!Store.I.canAdmin) {
+        if (!Store.I.canManageAny) {
           WidgetsBinding.instance
               .addPostFrameCallback((_) => Navigator.of(context).maybePop());
           return const Scaffold(body: SizedBox.shrink());
         }
         final s = Store.I;
+        final tiles = <Widget>[];
+        void tile(String key, IconData icon, Color color, String title,
+            String subtitle) {
+          tiles.add(Card(
+            margin: const EdgeInsets.only(bottom: 10),
+            child: ListTile(
+              leading: Icon(icon, color: color),
+              title: Text(title,
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: Text(subtitle, style: const TextStyle(color: kMuted)),
+              trailing: const Icon(Icons.chevron_right, color: kMuted),
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) =>
+                      _AdminSectionScreen(sectionKey: key, title: title))),
+            ),
+          ));
+        }
+
+        if (s.can('usersRoles')) {
+          tile('users', Icons.group_outlined, kAccent, 'Benutzer & Rollen',
+              '${s.users.length} Benutzer · ${s.roles.length} Rollen');
+        }
+        if (s.can('materialPrices')) {
+          tile('materialPrices', Icons.euro, kViolet, 'Material-Preisliste',
+              '${s.catalog.length} Einträge');
+        }
+        if (s.can('pauschalen')) {
+          tile('pauschalen', Icons.receipt_long_outlined, kViolet, 'Pauschalen',
+              '${s.pauschalen.length} Einträge');
+        }
+        if (s.can('categories')) {
+          tile('categories', Icons.category_outlined, kBlue,
+              'Kategorien / Gewerke', '${s.arten.length} Kategorien');
+        }
+
         return Scaffold(
           appBar: AppBar(title: const Text('Verwaltung')),
           body: ListView(
             padding: const EdgeInsets.fromLTRB(14, 14, 14, 30),
-            children: [
-              const _SectionTitle('Material-Preisliste'),
-              Card(
-                margin: EdgeInsets.zero,
-                child: Column(
-                  children: s.catalog
-                      .map((c) => ListTile(
-                            onTap: () => showCatalogForm(context, c),
-                            leading: const Icon(Icons.euro, color: kViolet),
-                            title: Text(c.name),
-                            subtitle: Text('${eur(c.price)} / ${c.unit}',
-                                style: const TextStyle(color: kMuted)),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.delete_outline,
-                                  color: kMuted),
-                              onPressed: () {
-                                s.catalog.removeWhere((x) => x.id == c.id);
-                                s.save();
-                              },
-                            ),
-                          ))
-                      .toList(),
-                ),
-              ),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  icon: const Icon(Icons.add),
-                  label: const Text('Preis hinzufügen'),
-                  onPressed: () => showCatalogForm(context, null),
-                ),
-              ),
-              const SizedBox(height: 10),
-              const _SectionTitle('Kategorien / Gewerke'),
-              Card(
-                margin: EdgeInsets.zero,
-                child: Column(
-                  children: s.arten.map((a) {
-                    final used = s.projects.where((p) => p.type == a).length;
-                    return ListTile(
-                      onTap: () => showCategoryForm(context, a),
-                      leading: const Icon(Icons.category_outlined, color: kBlue),
-                      title: Text(a),
-                      subtitle: Text(
-                          used == 0
-                              ? 'Nicht verwendet'
-                              : '$used Auftrag${used == 1 ? '' : 'e'}',
-                          style: const TextStyle(color: kMuted)),
-                      trailing: IconButton(
-                        icon:
-                            const Icon(Icons.delete_outline, color: kMuted),
-                        onPressed: () => _delCategory(context, a),
-                      ),
-                    );
-                  }).toList(),
-                ),
-              ),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  icon: const Icon(Icons.add),
-                  label: const Text('Kategorie hinzufügen'),
-                  onPressed: () => showCategoryForm(context, null),
-                ),
-              ),
-              const SizedBox(height: 10),
-              const _SectionTitle('Benutzer'),
-              Card(
-                margin: EdgeInsets.zero,
-                child: Column(
-                  children: s.users
-                      .map((u) => ListTile(
-                            onTap: () => showUserForm(context, u),
-                            leading: const Icon(Icons.person_outline,
-                                color: kAccent),
-                            title: Text(
-                                '${u.name}${u.id == s.sessionId ? '  (du)' : ''}'),
-                            subtitle: Text('${u.role} · PIN ${u.pin}',
-                                style: const TextStyle(color: kMuted)),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.delete_outline,
-                                  color: kMuted),
-                              onPressed: () => _delUser(context, u),
-                            ),
-                          ))
-                      .toList(),
-                ),
-              ),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  icon: const Icon(Icons.add),
-                  label: const Text('Benutzer hinzufügen'),
-                  onPressed: () => showUserForm(context, null),
-                ),
-              ),
-            ],
+            children: tiles,
           ),
         );
       },
     );
+  }
+}
+
+class _AdminSectionScreen extends StatelessWidget {
+  final String sectionKey;
+  final String title;
+  const _AdminSectionScreen({required this.sectionKey, required this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: Store.I,
+      builder: (_, __) {
+        final s = Store.I;
+        return Scaffold(
+          appBar: AppBar(title: Text(title)),
+          body: ListView(
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 30),
+            children: _body(context, s),
+          ),
+        );
+      },
+    );
+  }
+
+  List<Widget> _body(BuildContext context, Store s) {
+    switch (sectionKey) {
+      case 'materialPrices':
+        return [
+          Card(
+            margin: EdgeInsets.zero,
+            child: Column(
+              children: s.catalog
+                  .map((c) => ListTile(
+                        onTap: () => showCatalogForm(context, c),
+                        leading: const Icon(Icons.euro, color: kViolet),
+                        title: Text(c.name),
+                        subtitle: Text('${eur(c.price)} / ${c.unit}',
+                            style: const TextStyle(color: kMuted)),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete_outline, color: kMuted),
+                          onPressed: () {
+                            s.catalog.removeWhere((x) => x.id == c.id);
+                            s.save();
+                          },
+                        ),
+                      ))
+                  .toList(),
+            ),
+          ),
+          _adminAddBtn('Preis hinzufügen', () => showCatalogForm(context, null)),
+        ];
+      case 'pauschalen':
+        return [
+          Card(
+            margin: EdgeInsets.zero,
+            child: Column(
+              children: s.pauschalen
+                  .map((pa) => ListTile(
+                        onTap: () => showPauschaleForm(context, pa),
+                        leading: const Icon(Icons.receipt_long_outlined,
+                            color: kViolet),
+                        title: Text(pa.name),
+                        subtitle: Text(eur(pa.amount),
+                            style: const TextStyle(color: kMuted)),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete_outline, color: kMuted),
+                          onPressed: () {
+                            s.pauschalen.removeWhere((x) => x.id == pa.id);
+                            s.save();
+                          },
+                        ),
+                      ))
+                  .toList(),
+            ),
+          ),
+          _adminAddBtn(
+              'Pauschale hinzufügen', () => showPauschaleForm(context, null)),
+        ];
+      case 'categories':
+        return [
+          Card(
+            margin: EdgeInsets.zero,
+            child: Column(
+              children: s.arten.map((a) {
+                final used = s.projects.where((p) => p.type == a).length;
+                return ListTile(
+                  onTap: () => showCategoryForm(context, a),
+                  leading: const Icon(Icons.category_outlined, color: kBlue),
+                  title: Text(a),
+                  subtitle: Text(
+                      used == 0
+                          ? 'Nicht verwendet'
+                          : '$used Auftrag${used == 1 ? '' : 'e'}',
+                      style: const TextStyle(color: kMuted)),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete_outline, color: kMuted),
+                    onPressed: () => _delCategory(context, a),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+          _adminAddBtn(
+              'Kategorie hinzufügen', () => showCategoryForm(context, null)),
+        ];
+      case 'users':
+        return [
+          Card(
+            margin: EdgeInsets.zero,
+            child: Column(
+              children: s.users
+                  .map((u) => ListTile(
+                        onTap: () => showUserForm(context, u),
+                        leading:
+                            const Icon(Icons.person_outline, color: kAccent),
+                        title: Text(
+                            '${u.name}${u.id == s.sessionId ? '  (du)' : ''}'),
+                        subtitle: Text(
+                            '${u.role}${u.wage > 0 ? ' · ${eur(u.wage)}/h' : ''} · PIN ${u.pin}',
+                            style: const TextStyle(color: kMuted)),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete_outline, color: kMuted),
+                          onPressed: () => _delUser(context, u),
+                        ),
+                      ))
+                  .toList(),
+            ),
+          ),
+          _adminAddBtn(
+              'Benutzer hinzufügen', () => showUserForm(context, null)),
+          const SizedBox(height: 6),
+          Card(
+            margin: EdgeInsets.zero,
+            child: ListTile(
+              leading: const Icon(Icons.shield_outlined, color: kBlue),
+              title: const Text('Rollen & Berechtigungen',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: Text('${s.roles.length} Rollen',
+                  style: const TextStyle(color: kMuted)),
+              trailing: const Icon(Icons.chevron_right, color: kMuted),
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => const _AdminSectionScreen(
+                      sectionKey: 'roles',
+                      title: 'Rollen & Berechtigungen'))),
+            ),
+          ),
+        ];
+      case 'roles':
+        return [
+          Card(
+            margin: EdgeInsets.zero,
+            child: Column(
+              children: s.roles.map((r) {
+                final admin = r == kAdminRole;
+                final n =
+                    admin ? kPerms.length : (s.rolePerms[r] ?? const []).length;
+                final count = s.users.where((u) => u.role == r).length;
+                return ListTile(
+                  onTap: () => showRolePermsForm(context, r),
+                  leading: Icon(Icons.shield_outlined,
+                      color: admin ? kAccent : kBlue),
+                  title: Text(r),
+                  subtitle: Text(
+                      '${admin ? 'alle' : '$n'} Rechte · $count Benutzer',
+                      style: const TextStyle(color: kMuted)),
+                  trailing: admin
+                      ? const Icon(Icons.lock_outline, color: kMuted, size: 20)
+                      : IconButton(
+                          icon: const Icon(Icons.delete_outline, color: kMuted),
+                          onPressed: () => _delRole(context, r),
+                        ),
+                );
+              }).toList(),
+            ),
+          ),
+          _adminAddBtn('Rolle hinzufügen', () => showRoleForm(context, null)),
+        ];
+      default:
+        return const [];
+    }
   }
 
   void _delCategory(BuildContext context, String a) async {
@@ -1668,7 +2102,34 @@ class AdminScreen extends StatelessWidget {
       Store.I.save();
     }
   }
+
+  void _delRole(BuildContext context, String r) async {
+    final s = Store.I;
+    if (r == kAdminRole) return;
+    final used = s.users.where((u) => u.role == r).length;
+    if (used > 0) {
+      snack(context,
+          'Rolle wird von $used Benutzer${used == 1 ? '' : 'n'} genutzt und kann nicht gelöscht werden.');
+      return;
+    }
+    if (s.roles.length <= 1) {
+      snack(context, 'Es muss mindestens eine Rolle bleiben.');
+      return;
+    }
+    final ok = await confirm(context, 'Rolle „$r" wirklich löschen?');
+    if (ok) {
+      s.roles.remove(r);
+      s.rolePerms.remove(r);
+      s.save();
+    }
+  }
 }
+
+Widget _adminAddBtn(String label, VoidCallback onTap) => Align(
+      alignment: Alignment.centerLeft,
+      child: TextButton.icon(
+          icon: const Icon(Icons.add), label: Text(label), onPressed: onTap),
+    );
 
 class _SectionTitle extends StatelessWidget {
   final String text;
@@ -1780,37 +2241,63 @@ String _fileSlug(String s) {
 }
 
 Future<void> exportProjectPdf(BuildContext context, Project p) async {
-  final ctrl = TextEditingController();
+  final sel = <String>{}; // ausgewählte Pauschalen-IDs
   await _sheet(context, (ctx) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('PDF exportieren',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-        const SizedBox(height: 4),
-        const Text('Leistungsnachweis / Rechnung für diesen Auftrag.',
-            style: TextStyle(color: kMuted, fontSize: 13)),
-        _label('Stundensatz (€/h, optional)'),
-        TextField(
-          controller: ctrl,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(
-            hintText: 'z.B. 45 – leer lassen für nur Stundenanzahl',
-            isDense: true,
-          ),
-        ),
-        _saveBtn('PDF erstellen', () async {
-          final satz =
-              double.tryParse(ctrl.text.trim().replaceAll(',', '.')) ?? 0;
-          Navigator.pop(ctx);
-          final bytes = await buildProjectInvoicePdf(p, stundensatz: satz);
-          final fname = 'baudoc_${_fileSlug(p.name)}_${today()}.pdf';
-          await downloadBytes(fname, bytes, 'application/pdf');
-          if (context.mounted) snack(context, 'PDF erstellt: $fname');
-        }),
-      ],
-    );
+    return StatefulBuilder(builder: (ctx, setSt) {
+      final paus = Store.I.pauschalen;
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('PDF exportieren',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          const Text(
+              'Leistungsnachweis / Rechnung. Löhne werden je Mitarbeiter '
+              'automatisch berechnet.',
+              style: TextStyle(color: kMuted, fontSize: 13)),
+          if (paus.isNotEmpty) ...[
+            _label('Pauschalen aufschlagen'),
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  children: paus
+                      .map((pa) => CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            controlAffinity: ListTileControlAffinity.leading,
+                            activeColor: kAccent,
+                            value: sel.contains(pa.id),
+                            onChanged: (v) => setSt(() {
+                              if (v == true) {
+                                sel.add(pa.id);
+                              } else {
+                                sel.remove(pa.id);
+                              }
+                            }),
+                            title: Text(pa.name),
+                            secondary: Text(eur(pa.amount)),
+                          ))
+                      .toList(),
+                ),
+              ),
+            ),
+          ],
+          _saveBtn('PDF erstellen', () async {
+            Navigator.pop(ctx);
+            final wages = {for (final u in Store.I.users) u.name: u.wage};
+            final chosen =
+                Store.I.pauschalen.where((pa) => sel.contains(pa.id)).toList();
+            final bytes = await buildProjectInvoicePdf(p,
+                customer: Store.I.customerById(p.customerId),
+                wages: wages,
+                pauschalen: chosen);
+            final fname = 'baudoc_${_fileSlug(p.name)}_${today()}.pdf';
+            await downloadBytes(fname, bytes, 'application/pdf');
+            if (context.mounted) snack(context, 'PDF erstellt: $fname');
+          }),
+        ],
+      );
+    });
   });
 }
 
@@ -2095,7 +2582,7 @@ void showProfileSheet(BuildContext context) {
             ]),
           ]),
           const SizedBox(height: 14),
-          if (Store.I.canAdmin) ...[
+          if (Store.I.canManageAny) ...[
             ListTile(
               onTap: () {
                 Navigator.pop(ctx);
@@ -2105,13 +2592,15 @@ void showProfileSheet(BuildContext context) {
               leading: const Icon(Icons.admin_panel_settings_outlined,
                   color: kViolet),
               title: const Text('Verwaltung'),
-              subtitle: const Text('Material-Preise, Kategorien, Benutzer',
+              subtitle: const Text('Benutzer & Rollen, Preise, Pauschalen, Kategorien',
                   style: TextStyle(color: kMuted, fontSize: 12)),
               tileColor: kCard,
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(14)),
             ),
             const SizedBox(height: 8),
+          ],
+          if (Store.I.can('exportDocs')) ...[
             ListTile(
               onTap: () async {
                 Navigator.pop(ctx);
@@ -2189,6 +2678,7 @@ void showProjectForm(BuildContext context) {
   String type = Store.I.arten.isNotEmpty ? Store.I.arten.first : 'Sonstiges';
   String date = today();
   String due = '';
+  String customerId = '';
   _sheet(context, (ctx) {
     return StatefulBuilder(builder: (ctx, setSt) {
       return Column(
@@ -2215,6 +2705,17 @@ void showProjectForm(BuildContext context) {
             TextField(
                 controller: addr,
                 decoration: const InputDecoration(hintText: 'Straße, Ort')),
+            _label('Kunde'),
+            DropdownButtonFormField<String>(
+              initialValue: customerId,
+              dropdownColor: kCard2,
+              items: [
+                const DropdownMenuItem(value: '', child: Text('– kein Kunde –')),
+                ...Store.I.customers
+                    .map((c) => DropdownMenuItem(value: c.id, child: Text(c.name))),
+              ],
+              onChanged: (v) => setSt(() => customerId = v ?? ''),
+            ),
             _label('Start / Fällig'),
             Row(children: [
               Expanded(
@@ -2243,6 +2744,7 @@ void showProjectForm(BuildContext context) {
                       status: 'active',
                       date: date,
                       due: due,
+                      customerId: customerId,
                       hours: [],
                       materials: [],
                       tasks: []));
@@ -2257,66 +2759,122 @@ void showProjectForm(BuildContext context) {
 // ---- Bautagebuch ----
 void showNoteForm(BuildContext context, Project p) {
   final text = TextEditingController();
+  bool saving = false;
   _sheet(context, (ctx) {
-    return Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('Tagebuch-Eintrag',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-          _label('Notiz'),
-          TextField(
-            controller: text,
-            maxLines: 4,
-            decoration:
-                const InputDecoration(hintText: 'Was ist heute passiert?'),
-          ),
-          _saveBtn('Eintrag speichern', () {
-            if (text.text.trim().isEmpty) return;
-            p.notes
-                .add(Note(id: uid(), date: today(), text: text.text.trim()));
-            Store.I.save();
-            Navigator.pop(ctx);
-          }),
-        ]);
+    return StatefulBuilder(builder: (ctx, setSt) {
+      return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Tagebuch-Eintrag',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            _label('Notiz'),
+            TextField(
+              controller: text,
+              maxLines: 4,
+              decoration:
+                  const InputDecoration(hintText: 'Was ist heute passiert?'),
+            ),
+            const Padding(
+              padding: EdgeInsets.only(top: 8, left: 2),
+              child: Row(children: [
+                Icon(Icons.cloud_outlined, size: 15, color: kMuted),
+                SizedBox(width: 6),
+                Expanded(
+                  child: Text('Wetter wird beim Speichern automatisch erfasst.',
+                      style: TextStyle(color: kMuted, fontSize: 12)),
+                ),
+              ]),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 18),
+              child: SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  style: FilledButton.styleFrom(
+                      backgroundColor: kAccent, foregroundColor: kAccentInk),
+                  onPressed: saving
+                      ? null
+                      : () async {
+                          if (text.text.trim().isEmpty) return;
+                          setSt(() => saving = true);
+                          final w = await fetchCurrentWeather();
+                          p.notes.add(Note(
+                              id: uid(),
+                              date: today(),
+                              text: text.text.trim(),
+                              weather: w.desc,
+                              temp: w.temp));
+                          Store.I.save();
+                          if (ctx.mounted) Navigator.pop(ctx);
+                        },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: saving
+                        ? const SizedBox(
+                            height: 18,
+                            width: 18,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: kAccentInk))
+                        : const Text('Eintrag speichern'),
+                  ),
+                ),
+              ),
+            ),
+          ]);
+    });
   });
 }
 
 // ---- Stunden ----
 void showHoursForm(BuildContext context, Project p) {
-  final worker = TextEditingController(text: 'Ich');
+  final names = {for (final u in Store.I.users) u.name}.toList();
+  String worker = Store.I.currentUser?.name ??
+      (names.isNotEmpty ? names.first : 'Ich');
+  if (!names.contains(worker)) names.insert(0, worker);
   final hrs = TextEditingController(text: '8');
   final task = TextEditingController();
   _sheet(context, (ctx) {
-    return Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('Stunden eintragen',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-          _label('Mitarbeiter'),
-          TextField(controller: worker),
-          _label('Stunden'),
-          TextField(
-              controller: hrs,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true)),
-          _label('Tätigkeit'),
-          TextField(
-              controller: task,
-              decoration: const InputDecoration(hintText: 'z. B. Mauern EG')),
-          _saveBtn('Speichern', () {
-            p.hours.add(WorkHours(
-                id: uid(),
-                worker: worker.text.trim().isEmpty ? 'Ich' : worker.text.trim(),
-                date: today(),
-                task: task.text.trim(),
-                h: double.tryParse(hrs.text.replaceAll(',', '.')) ?? 0,
-                synced: Store.I.online));
-            Store.I.save();
-            Navigator.pop(ctx);
-          }),
-        ]);
+    return StatefulBuilder(builder: (ctx, setSt) {
+      return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Stunden eintragen',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            _label('Mitarbeiter'),
+            DropdownButtonFormField<String>(
+              initialValue: worker,
+              dropdownColor: kCard2,
+              isExpanded: true,
+              items: names
+                  .map((n) => DropdownMenuItem(value: n, child: Text(n)))
+                  .toList(),
+              onChanged: (v) => setSt(() => worker = v!),
+            ),
+            _label('Stunden'),
+            TextField(
+                controller: hrs,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true)),
+            _label('Tätigkeit'),
+            TextField(
+                controller: task,
+                decoration:
+                    const InputDecoration(hintText: 'z. B. Mauern EG')),
+            _saveBtn('Speichern', () {
+              p.hours.add(WorkHours(
+                  id: uid(),
+                  worker: worker,
+                  date: today(),
+                  task: task.text.trim(),
+                  h: double.tryParse(hrs.text.replaceAll(',', '.')) ?? 0,
+                  synced: Store.I.online));
+              Store.I.save();
+              Navigator.pop(ctx);
+            }),
+          ]);
+    });
   });
 }
 
@@ -2394,6 +2952,48 @@ void showTaskForm(BuildContext context, Project p) {
             if (title.text.trim().isEmpty) return;
             p.tasks.add(Task(
                 id: uid(), title: title.text.trim(), due: '', done: false));
+            Store.I.save();
+            Navigator.pop(ctx);
+          }),
+        ]);
+  });
+}
+
+// ---- Mangel ----
+void showDefectForm(BuildContext context, Project p, Defect? existing) {
+  final title = TextEditingController(text: existing?.title ?? '');
+  final desc = TextEditingController(text: existing?.description ?? '');
+  _sheet(context, (ctx) {
+    return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(existing == null ? 'Neuer Mangel' : 'Mangel bearbeiten',
+              style:
+                  const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          _label('Titel'),
+          TextField(
+              controller: title,
+              decoration: const InputDecoration(
+                  hintText: 'z. B. Riss in Wand EG')),
+          _label('Beschreibung (optional)'),
+          TextField(
+              controller: desc,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                  hintText: 'Details, Ort, was zu tun ist')),
+          _saveBtn('Speichern', () {
+            if (title.text.trim().isEmpty) return;
+            if (existing != null) {
+              existing.title = title.text.trim();
+              existing.description = desc.text.trim();
+            } else {
+              p.defects.add(Defect(
+                  id: uid(),
+                  title: title.text.trim(),
+                  description: desc.text.trim(),
+                  date: today()));
+            }
             Store.I.save();
             Navigator.pop(ctx);
           }),
@@ -2499,11 +3099,218 @@ void showCatalogForm(BuildContext context, CatalogItem? c) {
   });
 }
 
+// ---- Kunde ----
+void showCustomerForm(BuildContext context, Customer? existing) {
+  final name = TextEditingController(text: existing?.name ?? '');
+  final addr = TextEditingController(text: existing?.address ?? '');
+  final contact = TextEditingController(text: existing?.contact ?? '');
+  _sheet(context, (ctx) {
+    return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(existing == null ? 'Neuer Kunde' : 'Kunde bearbeiten',
+              style:
+                  const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          _label('Name'),
+          TextField(
+              controller: name,
+              decoration:
+                  const InputDecoration(hintText: 'z. B. Familie Müller')),
+          _label('Anschrift'),
+          TextField(
+              controller: addr,
+              decoration: const InputDecoration(hintText: 'Straße, Ort')),
+          _label('Kontakt (Tel. / E-Mail)'),
+          TextField(
+              controller: contact,
+              decoration:
+                  const InputDecoration(hintText: 'z. B. 0621 123456')),
+          _saveBtn('Speichern', () {
+            if (name.text.trim().isEmpty) return;
+            if (existing != null) {
+              existing.name = name.text.trim();
+              existing.address = addr.text.trim();
+              existing.contact = contact.text.trim();
+            } else {
+              Store.I.customers.add(Customer(
+                  id: uid(),
+                  name: name.text.trim(),
+                  address: addr.text.trim(),
+                  contact: contact.text.trim()));
+            }
+            Store.I.save();
+            Navigator.pop(ctx);
+          }),
+        ]);
+  });
+}
+
+// ---- Pauschale ----
+void showPauschaleForm(BuildContext context, Pauschale? existing) {
+  final name = TextEditingController(text: existing?.name ?? '');
+  final amount = TextEditingController(
+      text: existing != null ? existing.amount.toString() : '');
+  _sheet(context, (ctx) {
+    return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(existing == null ? 'Neue Pauschale' : 'Pauschale bearbeiten',
+              style:
+                  const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          _label('Bezeichnung'),
+          TextField(
+              controller: name,
+              decoration: const InputDecoration(
+                  hintText: 'z. B. Anfahrtspauschale')),
+          _label('Betrag (€)'),
+          TextField(
+              controller: amount,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true)),
+          _saveBtn('Speichern', () {
+            if (name.text.trim().isEmpty) return;
+            final a =
+                double.tryParse(amount.text.trim().replaceAll(',', '.')) ?? 0;
+            if (existing != null) {
+              existing.name = name.text.trim();
+              existing.amount = a;
+            } else {
+              Store.I.pauschalen
+                  .add(Pauschale(id: uid(), name: name.text.trim(), amount: a));
+            }
+            Store.I.save();
+            Navigator.pop(ctx);
+          }),
+        ]);
+  });
+}
+
+// ---- Rolle ----
+void showRoleForm(BuildContext context, String? existing) {
+  final ctrl = TextEditingController(text: existing ?? '');
+  _sheet(context, (ctx) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(existing == null ? 'Neue Rolle' : 'Rolle umbenennen',
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+        _label('Bezeichnung'),
+        TextField(
+          controller: ctrl,
+          autofocus: true,
+          textCapitalization: TextCapitalization.sentences,
+          decoration: const InputDecoration(hintText: 'z. B. Azubi'),
+        ),
+        _saveBtn('Speichern', () {
+          final name = ctrl.text.trim();
+          if (name.isEmpty) return;
+          final s = Store.I;
+          if (existing == kAdminRole && name != existing) {
+            snack(context, 'Administrator kann nicht umbenannt werden.');
+            return;
+          }
+          final dup = s.roles
+              .any((r) => r.toLowerCase() == name.toLowerCase() && r != existing);
+          if (dup) {
+            snack(context, 'Diese Rolle gibt es bereits.');
+            return;
+          }
+          if (existing == null) {
+            s.roles.add(name);
+            s.rolePerms[name] = [];
+          } else if (existing != name) {
+            final i = s.roles.indexOf(existing);
+            if (i >= 0) s.roles[i] = name;
+            s.rolePerms[name] = s.rolePerms.remove(existing) ?? [];
+            for (final u in s.users.where((u) => u.role == existing)) {
+              u.role = name;
+            }
+          }
+          s.save();
+          Navigator.pop(ctx);
+        }),
+      ],
+    );
+  });
+}
+
+// ---- Rolle: Berechtigungen ----
+void showRolePermsForm(BuildContext context, String role) {
+  final admin = role == kAdminRole;
+  final sel = {...(Store.I.rolePerms[role] ?? const <String>[])};
+  _sheet(context, (ctx) {
+    return StatefulBuilder(builder: (ctx, setSt) {
+      return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Expanded(
+                child: Text('Rechte – $role',
+                    style: const TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.w700)),
+              ),
+              if (!admin)
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    showRoleForm(context, role);
+                  },
+                  child: const Text('Umbenennen'),
+                ),
+            ]),
+            if (admin)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 10),
+                child: Text('Administrator hat immer alle Rechte.',
+                    style: TextStyle(color: kMuted)),
+              )
+            else ...[
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: kPerms.entries
+                        .map((e) => CheckboxListTile(
+                              contentPadding: EdgeInsets.zero,
+                              controlAffinity: ListTileControlAffinity.leading,
+                              activeColor: kAccent,
+                              value: sel.contains(e.key),
+                              onChanged: (v) => setSt(() {
+                                if (v == true) {
+                                  sel.add(e.key);
+                                } else {
+                                  sel.remove(e.key);
+                                }
+                              }),
+                              title: Text(e.value),
+                            ))
+                        .toList(),
+                  ),
+                ),
+              ),
+              _saveBtn('Speichern', () {
+                Store.I.rolePerms[role] = sel.toList();
+                Store.I.save();
+                Navigator.pop(ctx);
+              }),
+            ],
+          ]);
+    });
+  });
+}
+
 // ---- Benutzer ----
 void showUserForm(BuildContext context, AppUser? u) {
   final name = TextEditingController(text: u?.name ?? '');
   final pin = TextEditingController(text: u?.pin ?? '');
-  String role = u?.role ?? rollen.first;
+  final wageCtrl = TextEditingController(
+      text: (u != null && u.wage > 0) ? u.wage.toString() : '');
+  final rollen = Store.I.roles;
+  final showWage = Store.I.can('wages');
+  String role = u?.role ?? (rollen.isNotEmpty ? rollen.first : kAdminRole);
   _sheet(context, (ctx) {
     return StatefulBuilder(builder: (ctx, setSt) {
       return Column(
@@ -2522,7 +3329,7 @@ void showUserForm(BuildContext context, AppUser? u) {
             DropdownButtonFormField<String>(
               initialValue: role,
               dropdownColor: kCard2,
-              items: rollen
+              items: {...rollen, role}
                   .map((r) => DropdownMenuItem(value: r, child: Text(r)))
                   .toList(),
               onChanged: (v) => setSt(() => role = v!),
@@ -2532,22 +3339,38 @@ void showUserForm(BuildContext context, AppUser? u) {
                 controller: pin,
                 keyboardType: TextInputType.number,
                 maxLength: 4),
+            if (showWage) ...[
+              _label('Stundenlohn (€/h)'),
+              TextField(
+                  controller: wageCtrl,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                      hintText: 'z. B. 45 – leer = nicht hinterlegt')),
+            ],
             _saveBtn('Speichern', () {
               if (name.text.trim().isEmpty) return;
               if (!RegExp(r'^\d{4}$').hasMatch(pin.text.trim())) {
                 snack(ctx, 'Bitte einen 4-stelligen PIN eingeben.');
                 return;
               }
+              final w = showWage
+                  ? (double.tryParse(
+                          wageCtrl.text.trim().replaceAll(',', '.')) ??
+                      0)
+                  : null;
               if (u != null) {
                 u.name = name.text.trim();
                 u.role = role;
                 u.pin = pin.text.trim();
+                if (w != null) u.wage = w;
               } else {
                 Store.I.users.add(AppUser(
                     id: uid(),
                     name: name.text.trim(),
                     role: role,
-                    pin: pin.text.trim()));
+                    pin: pin.text.trim(),
+                    wage: w ?? 0));
               }
               Store.I.save();
               Navigator.pop(ctx);

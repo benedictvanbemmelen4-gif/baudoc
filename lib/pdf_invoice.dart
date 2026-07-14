@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
-import 'main.dart' show Project, dLong, today;
+import 'main.dart' show Project, Customer, Pauschale, dLong, today;
 
 // Zahl mit Dezimalkomma (deutsche Schreibweise).
 String _n(num v) => v.toStringAsFixed(2).replaceAll('.', ',');
@@ -39,26 +39,34 @@ String _s(String t) {
 }
 
 // Erzeugt einen Leistungsnachweis/Rechnung als PDF für einen Auftrag.
-// stundensatz > 0 → Lohnspalte + Lohnsumme werden ausgewiesen.
+// wages: Mitarbeitername → Stundenlohn (€/h); Lohn wird je Mitarbeiter
+// automatisch berechnet. pauschalen: ausgewählte Aufschläge.
 Future<Uint8List> buildProjectInvoicePdf(Project p,
-    {double stundensatz = 0}) async {
+    {Customer? customer,
+    Map<String, double> wages = const {},
+    List<Pauschale> pauschalen = const []}) async {
   final doc = pw.Document();
   final totalH = p.hours.fold<double>(0, (s, e) => s + e.h);
+  double wageFor(String w) => wages[w] ?? 0;
+  final lohn = p.hours.fold<double>(0, (s, e) => s + e.h * wageFor(e.worker));
   final matCost = p.materials.fold<double>(0, (s, e) => s + e.qty * e.price);
-  final lohn = stundensatz > 0 ? totalH * stundensatz : 0.0;
-  final gesamt = matCost + lohn;
+  final pausSum = pauschalen.fold<double>(0, (s, e) => s + e.amount);
+  final gesamt = matCost + lohn + pausSum;
+  final showLohn = lohn > 0;
 
   doc.addPage(pw.MultiPage(
     pageFormat: PdfPageFormat.a4,
     margin: const pw.EdgeInsets.all(32),
     build: (ctx) => [
-      _header(p),
+      _header(p, customer),
       pw.SizedBox(height: 16),
-      _hoursSection(p, stundensatz, totalH),
+      _hoursSection(p, wageFor, totalH, lohn, showLohn),
       pw.SizedBox(height: 16),
       _materialSection(p, matCost),
+      if (pauschalen.isNotEmpty) pw.SizedBox(height: 16),
+      if (pauschalen.isNotEmpty) _pauschalenSection(pauschalen, pausSum),
       pw.SizedBox(height: 16),
-      _totals(matCost, lohn, gesamt, stundensatz),
+      _totals(matCost, lohn, pausSum, gesamt, showLohn, pauschalen.isNotEmpty),
     ],
     footer: (ctx) => pw.Container(
       alignment: pw.Alignment.centerRight,
@@ -72,7 +80,7 @@ Future<Uint8List> buildProjectInvoicePdf(Project p,
   return doc.save();
 }
 
-pw.Widget _header(Project p) {
+pw.Widget _header(Project p, Customer? customer) {
   pw.Widget row(String k, String v) => pw.Padding(
         padding: const pw.EdgeInsets.only(bottom: 2),
         child: pw.Row(children: [
@@ -93,6 +101,11 @@ pw.Widget _header(Project p) {
     pw.SizedBox(height: 2),
     pw.Text(_s(p.name), style: const pw.TextStyle(fontSize: 14)),
     pw.Divider(),
+    if (customer != null) row('Kunde:', _s(customer.name)),
+    if (customer != null && customer.address.isNotEmpty)
+      row('Anschrift:', _s(customer.address)),
+    if (customer != null && customer.contact.isNotEmpty)
+      row('Kontakt:', _s(customer.contact)),
     if (p.type.isNotEmpty) row('Gewerk:', _s(p.type)),
     if (p.address.isNotEmpty) row('Adresse:', _s(p.address)),
     row('Status:', p.isOpen ? 'Aktiv' : 'Abgeschlossen'),
@@ -102,13 +115,17 @@ pw.Widget _header(Project p) {
   ]);
 }
 
-pw.Widget _hoursSection(Project p, double satz, double totalH) {
-  final headers = satz > 0
-      ? ['Datum', 'Mitarbeiter', 'Tätigkeit', 'Std.', 'Betrag']
+pw.Widget _hoursSection(Project p, double Function(String) wageFor,
+    double totalH, double lohn, bool showLohn) {
+  final headers = showLohn
+      ? ['Datum', 'Mitarbeiter', 'Tätigkeit', 'Std.', '€/h', 'Betrag']
       : ['Datum', 'Mitarbeiter', 'Tätigkeit', 'Std.'];
   final data = p.hours.map((h) {
     final r = [dLong(h.date), _s(h.worker), _s(h.task), _hours(h.h)];
-    if (satz > 0) r.add(_eur(h.h * satz));
+    if (showLohn) {
+      r.add(_eur(wageFor(h.worker)));
+      r.add(_eur(h.h * wageFor(h.worker)));
+    }
     return r;
   }).toList();
   return pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
@@ -130,6 +147,7 @@ pw.Widget _hoursSection(Project p, double satz, double totalH) {
         cellAlignments: {
           3: pw.Alignment.centerRight,
           4: pw.Alignment.centerRight,
+          5: pw.Alignment.centerRight,
         },
         border: pw.TableBorder.all(color: PdfColors.grey400, width: .5),
       ),
@@ -137,12 +155,38 @@ pw.Widget _hoursSection(Project p, double satz, double totalH) {
     pw.Align(
       alignment: pw.Alignment.centerRight,
       child: pw.Text(
-        satz > 0
-            ? 'Summe Stunden: ${_hours(totalH)} h · Lohn: ${_eur(totalH * satz)}'
+        showLohn
+            ? 'Summe Stunden: ${_hours(totalH)} h · Lohn: ${_eur(lohn)}'
             : 'Summe Stunden: ${_hours(totalH)} h',
         style:
             const pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold),
       ),
+    ),
+  ]);
+}
+
+pw.Widget _pauschalenSection(List<Pauschale> items, double sum) {
+  return pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+    pw.Text('Pauschalen',
+        style:
+            const pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),
+    pw.SizedBox(height: 4),
+    pw.TableHelper.fromTextArray(
+      headers: ['Bezeichnung', 'Betrag'],
+      data: items.map((e) => [_s(e.name), _eur(e.amount)]).toList(),
+      headerStyle:
+          const pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9),
+      cellStyle: const pw.TextStyle(fontSize: 9),
+      headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
+      cellAlignments: {1: pw.Alignment.centerRight},
+      border: pw.TableBorder.all(color: PdfColors.grey400, width: .5),
+    ),
+    pw.SizedBox(height: 4),
+    pw.Align(
+      alignment: pw.Alignment.centerRight,
+      child: pw.Text('Summe Pauschalen: ${_eur(sum)}',
+          style: const pw.TextStyle(
+              fontSize: 10, fontWeight: pw.FontWeight.bold)),
     ),
   ]);
 }
@@ -190,7 +234,8 @@ pw.Widget _materialSection(Project p, double matCost) {
   ]);
 }
 
-pw.Widget _totals(double mat, double lohn, double gesamt, double satz) {
+pw.Widget _totals(double mat, double lohn, double paus, double gesamt,
+    bool showLohn, bool showPaus) {
   pw.Widget line(String k, String v, {bool bold = false}) => pw.Row(
         mainAxisAlignment: pw.MainAxisAlignment.end,
         children: [
@@ -212,8 +257,9 @@ pw.Widget _totals(double mat, double lohn, double gesamt, double satz) {
       );
   return pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
     pw.Divider(),
-    if (satz > 0) line('Lohn:', _eur(lohn)),
+    if (showLohn) line('Lohn:', _eur(lohn)),
     line('Material:', _eur(mat)),
+    if (showPaus) line('Pauschalen:', _eur(paus)),
     pw.SizedBox(height: 2),
     line('Gesamt:', _eur(gesamt), bold: true),
   ]);
