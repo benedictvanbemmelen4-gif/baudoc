@@ -663,6 +663,27 @@ int pending(Project p) =>
     p.hours.where((h) => !h.synced).length +
     p.materials.where((m) => !m.synced).length;
 
+// Warn-/Amber-Ton (Fälligkeit bald, offene Mängel) – ergänzt die Kernpalette.
+const kWarn = Color(0xFFB4791A);
+
+// Stabile Farbzuordnung je Gewerk (Kategorien sind frei benennbar) – gleiche
+// Kategorie bekommt immer dieselbe Farbe (Summe der Zeichencodes → Palette).
+const _tradePalette = <Color>[
+  Color(0xFF2166B8), // Blau
+  Color(0xFFB07914), // Ocker
+  Color(0xFFBB562A), // Orange
+  Color(0xFF6D46C4), // Violett
+  Color(0xFF0E7C86), // Petrol
+  Color(0xFF1E9E63), // Grün
+  Color(0xFFC0468A), // Magenta
+  Color(0xFF4653C4), // Indigo
+];
+Color tradeColor(String type) {
+  if (type.isEmpty) return kMuted;
+  final h = type.codeUnits.fold<int>(0, (a, c) => a + c);
+  return _tradePalette[h % _tradePalette.length];
+}
+
 // ===================================================================
 // App
 // ===================================================================
@@ -1034,16 +1055,43 @@ class _HomeScreenState extends State<HomeScreen> {
             ...present.where((t) => !s.arten.contains(t)),
           ];
 
+          // Kennzahlen über alle Aufträge (nicht nur aktueller Tab)
+          final overdue =
+              s.projects.where((p) => p.isOpen && _isOverdue(p)).length;
+          final openDefects = s.projects.where((p) => p.isOpen).fold<int>(
+              0, (a, p) => a + p.defects.where((d) => !d.done).length);
+          final dueWeek = s.projects.where((p) {
+            if (!p.isOpen) return false;
+            final d = _dueDays(p);
+            return d != null && d >= 0 && d <= 7;
+          }).length;
+
           return Column(
             children: [
-              // Reiter
+              // Kennzahlen-Strip
               Padding(
                 padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
-                child: Row(children: [
-                  _tabBtn('Offen', openN, 'offen'),
-                  const SizedBox(width: 8),
-                  _tabBtn('Abgeschlossen', doneN, 'done'),
-                ]),
+                child: _statStrip(
+                    active: openN,
+                    overdue: overdue,
+                    defects: openDefects,
+                    dueWeek: dueWeek),
+              ),
+              // Segmented Control
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 6, 14, 8),
+                child: Container(
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    color: kCard2,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: kLine),
+                  ),
+                  child: Row(children: [
+                    _tabBtn('Offen', openN, 'offen'),
+                    _tabBtn('Abgeschlossen', doneN, 'done'),
+                  ]),
+                ),
               ),
               // Suche
               Padding(
@@ -1055,7 +1103,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     isDense: true,
                     prefixIcon:
                         const Icon(Icons.search, size: 20, color: kMuted),
-                    hintText: 'Auftrag suchen …',
+                    hintText: 'Auftrag oder Kunde suchen …',
                     suffixIcon: query.isEmpty
                         ? null
                         : IconButton(
@@ -1068,7 +1116,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
-              // Filter-Chips: alle Gewerke
+              // Filter-Chips: alle Gewerke, mit Farbtupfer je Kategorie
               SizedBox(
                 height: 44,
                 child: ListView(
@@ -1081,7 +1129,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     for (final t in chipCats)
                       _chip(t, filter == t,
                           () => setState(() => filter = t),
-                          count: countFor(t)),
+                          count: countFor(t), swatch: tradeColor(t)),
                   ],
                 ),
               ),
@@ -1098,12 +1146,20 @@ class _HomeScreenState extends State<HomeScreen> {
     return Expanded(
       child: GestureDetector(
         onTap: () => setState(() => tab = value),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 11),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(vertical: 9),
           decoration: BoxDecoration(
-            color: on ? kAccent : kCard,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: on ? kAccent : kLine),
+            color: on ? kCard : Colors.transparent,
+            borderRadius: BorderRadius.circular(9),
+            boxShadow: on
+                ? [
+                    BoxShadow(
+                        color: kInk.withValues(alpha: .07),
+                        blurRadius: 5,
+                        offset: const Offset(0, 1))
+                  ]
+                : null,
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -1111,21 +1167,21 @@ class _HomeScreenState extends State<HomeScreen> {
               Text(label,
                   style: TextStyle(
                       fontWeight: FontWeight.w700,
-                      fontSize: 13.5,
-                      color: on ? kAccentInk : kMuted)),
-              const SizedBox(width: 8),
+                      fontSize: 13,
+                      color: on ? kInk : kMuted)),
+              const SizedBox(width: 7),
               Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
                 decoration: BoxDecoration(
-                  color: (on ? kAccentInk : kMuted).withValues(alpha: .15),
+                  color: (on ? kAccent : kMuted).withValues(alpha: .15),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Text('$count',
                     style: TextStyle(
                         fontWeight: FontWeight.w700,
-                        fontSize: 12,
-                        color: on ? kAccentInk : kMuted)),
+                        fontSize: 11.5,
+                        color: on ? kAccent : kMuted)),
               ),
             ],
           ),
@@ -1134,7 +1190,8 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _chip(String label, bool on, VoidCallback onTap, {int? count}) {
+  Widget _chip(String label, bool on, VoidCallback onTap,
+      {int? count, Color? swatch}) {
     final c = on ? kAccent : kInk2;
     return Padding(
       padding: const EdgeInsets.only(right: 8),
@@ -1144,13 +1201,22 @@ class _HomeScreenState extends State<HomeScreen> {
           alignment: Alignment.center,
           padding: const EdgeInsets.symmetric(horizontal: 13),
           decoration: BoxDecoration(
-            color: on ? kAccent.withValues(alpha: .15) : kCard2,
+            color: on ? kAccent.withValues(alpha: .13) : kCard,
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: on ? kAccent : kLine),
+            border: Border.all(
+                color: on ? kAccent.withValues(alpha: .55) : kLine),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              if (swatch != null) ...[
+                Container(
+                    width: 8,
+                    height: 8,
+                    decoration:
+                        BoxDecoration(color: swatch, shape: BoxShape.circle)),
+                const SizedBox(width: 7),
+              ],
               Text(label,
                   style: TextStyle(
                       color: c,
@@ -1158,19 +1224,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       fontWeight: FontWeight.w600)),
               if (count != null) ...[
                 const SizedBox(width: 6),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                  decoration: BoxDecoration(
-                    color: c.withValues(alpha: .15),
-                    borderRadius: BorderRadius.circular(9),
-                  ),
-                  child: Text('$count',
-                      style: TextStyle(
-                          color: c,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700)),
-                ),
+                Text('$count',
+                    style: TextStyle(
+                        color: c.withValues(alpha: .7),
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700)),
               ],
             ],
           ),
@@ -1212,84 +1270,310 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
     }
-    if (filter != null) {
-      return ListView(
-        padding: const EdgeInsets.fromLTRB(14, 6, 14, 90),
-        children: [_projectCard(list)],
-      );
-    }
-    // gruppiert nach Gewerk
-    final groups = <String, List<Project>>{};
-    for (final p in list) {
-      groups
-          .putIfAbsent(p.type.isEmpty ? 'Ohne Kategorie' : p.type, () => [])
-          .add(p);
-    }
-    final keys = groups.keys.toList()..sort();
-    return ListView(
+    // Flache Liste dichter Auftragskarten (Gewerk steckt jetzt im Badge).
+    return ListView.separated(
       padding: const EdgeInsets.fromLTRB(14, 6, 14, 90),
-      children: [
-        for (final k in keys) ...[
-          Padding(
-            padding: const EdgeInsets.fromLTRB(4, 10, 4, 8),
-            child: Text('$k  (${groups[k]!.length})',
-                style: const TextStyle(
-                    color: kMuted,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 12,
-                    letterSpacing: .6)),
-          ),
-          _projectCard(groups[k]!),
-        ],
-      ],
+      itemCount: list.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      itemBuilder: (_, i) => _jobCard(list[i]),
     );
   }
 
-  Widget _projectCard(List<Project> items) {
+  // ---------- Auftragskarte ----------
+  Widget _jobCard(Project p) {
+    final tc = tradeColor(p.type);
+    final doneT = p.tasks.where((t) => t.done).length;
+    final totT = p.tasks.length;
+    final openDef = p.defects.where((d) => !d.done).length;
+    final h = sumHours(p);
+    final mat = sumMaterial(p);
+
     return Card(
       margin: EdgeInsets.zero,
-      child: Column(
-        children: [
-          for (var i = 0; i < items.length; i++) ...[
-            _projectRow(items[i]),
-            if (i < items.length - 1) const Divider(height: 1, color: kLine),
-          ]
-        ],
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => Navigator.push(context,
+            MaterialPageRoute(builder: (_) => ProjectScreen(projectId: p.id))),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Kopf: Gewerk-Badge + Fälligkeit
+              Row(children: [
+                if (p.type.isNotEmpty)
+                  Flexible(child: _tradeBadge(p.type, tc)),
+                const Spacer(),
+                _duePill(p),
+              ]),
+              const SizedBox(height: 11),
+              // Titel + Kunde/Adresse + Quick-Action
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(p.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 15.5,
+                                letterSpacing: -.2)),
+                        const SizedBox(height: 3),
+                        _subline(p),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _quickAction(p),
+                ],
+              ),
+              const SizedBox(height: 12),
+              const Divider(height: 1, color: kLine),
+              const SizedBox(height: 11),
+              // Fuß: Fortschritt + Mängel + Stunden + Material
+              Wrap(
+                spacing: 16,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  _progress(doneT, totT),
+                  if (openDef > 0)
+                    _meta(Icons.warning_amber_rounded,
+                        '$openDef ${openDef == 1 ? 'Mangel' : 'Mängel'}', kRed)
+                  else
+                    _meta(Icons.check_circle_outline, 'Keine Mängel', kGreen),
+                  _meta(Icons.schedule,
+                      h > 0 ? '${_hrs(h)} h' : 'Nicht gestartet', kMuted,
+                      strong: h > 0),
+                  if (mat > 0)
+                    _meta(Icons.inventory_2_outlined, eur(mat), kMuted,
+                        strong: true),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
-  Widget _projectRow(Project p) {
-    final pend = pending(p);
-    final col = p.isOpen ? kGreen : kInk2;
-    return ListTile(
-      onTap: () => Navigator.push(context,
-          MaterialPageRoute(builder: (_) => ProjectScreen(projectId: p.id))),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-      leading: Container(
-        width: 44,
-        height: 44,
+  Widget _tradeBadge(String type, Color c) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
         decoration: BoxDecoration(
-            color: col.withValues(alpha: .13),
-            borderRadius: BorderRadius.circular(12)),
-        child: Icon(Icons.apartment, color: col, size: 22),
-      ),
-      title: Text(p.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-              fontWeight: FontWeight.w700, fontSize: 15.5)),
-      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-        if (pend > 0)
-          Padding(
-            padding: const EdgeInsets.only(right: 4),
-            child: Icon(Icons.cloud_upload_outlined,
-                size: 17, color: kAccent.withValues(alpha: .8)),
+          color: c.withValues(alpha: .12),
+          borderRadius: BorderRadius.circular(7),
+          border: Border.all(color: c.withValues(alpha: .28)),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(type,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    color: c, fontSize: 11.5, fontWeight: FontWeight.w800)),
           ),
-        const Icon(Icons.chevron_right, color: kMuted),
-      ]),
+        ]),
+      );
+
+  Widget _duePill(Project p) {
+    if (!p.isOpen) return _pill(Icons.check, 'Abgeschlossen', kGreen);
+    final days = _dueDays(p);
+    if (days == null) {
+      return _pill(Icons.event_outlined, 'Kein Termin', kMuted, subtle: true);
+    }
+    if (days < 0) {
+      final d = -days;
+      return _pill(Icons.error_outline,
+          d == 1 ? '1 Tag überfällig' : '$d Tage überfällig', kRed);
+    }
+    if (days <= 7) {
+      return _pill(Icons.event_outlined, 'Fällig ${dShort(p.due)}', kWarn);
+    }
+    return _pill(Icons.event_outlined, 'Fällig ${dShort(p.due)}', kMuted,
+        subtle: true);
+  }
+
+  Widget _pill(IconData ic, String label, Color c, {bool subtle = false}) =>
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: subtle ? kCard2 : c.withValues(alpha: .13),
+          borderRadius: BorderRadius.circular(20),
+          border: subtle ? Border.all(color: kLine) : null,
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(ic, size: 13, color: subtle ? kMuted : c),
+          const SizedBox(width: 5),
+          Text(label,
+              style: TextStyle(
+                  color: subtle ? kInk2 : c,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600)),
+        ]),
+      );
+
+  Widget _subline(Project p) {
+    final cust = Store.I.customerById(p.customerId)?.name;
+    final txt = [
+      if (cust != null && cust.isNotEmpty) cust,
+      if (p.address.isNotEmpty) p.address,
+    ].join('  ·  ');
+    if (txt.isEmpty) return const SizedBox.shrink();
+    return Row(children: [
+      const Icon(Icons.place_outlined, size: 13, color: kMuted),
+      const SizedBox(width: 4),
+      Expanded(
+        child: Text(txt,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: kMuted, fontSize: 12.5)),
+      ),
+    ]);
+  }
+
+  Widget _quickAction(Project p) {
+    final pend = pending(p);
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      if (pend > 0)
+        Padding(
+          padding: const EdgeInsets.only(right: 4),
+          child: Icon(Icons.cloud_upload_outlined,
+              size: 16, color: kAccent.withValues(alpha: .8)),
+        ),
+      Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          color: kCard2,
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: kLine),
+        ),
+        child: const Icon(Icons.chevron_right, size: 19, color: kInk2),
+      ),
+    ]);
+  }
+
+  Widget _progress(int done, int total) {
+    if (total == 0) {
+      return _meta(Icons.checklist_rtl, 'Keine Aufgaben', kMuted);
+    }
+    final pct = (done / total).clamp(0.0, 1.0);
+    final full = done >= total;
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      SizedBox(
+        width: 70,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: LinearProgressIndicator(
+            value: pct,
+            minHeight: 6,
+            backgroundColor: kLine,
+            valueColor: AlwaysStoppedAnimation(full ? kGreen : kAccent),
+          ),
+        ),
+      ),
+      const SizedBox(width: 9),
+      Text('$done/$total Aufgaben',
+          style: const TextStyle(
+              color: kInk2, fontSize: 12.5, fontWeight: FontWeight.w600)),
+    ]);
+  }
+
+  Widget _meta(IconData ic, String label, Color c, {bool strong = false}) =>
+      Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(ic, size: 14, color: c),
+        const SizedBox(width: 5),
+        Text(label,
+            style: TextStyle(
+                color: strong ? kInk2 : c,
+                fontSize: 12.5,
+                fontWeight: strong ? FontWeight.w700 : FontWeight.w600)),
+      ]);
+
+  // ---------- Kennzahlen-Strip ----------
+  Widget _statStrip(
+      {required int active,
+      required int overdue,
+      required int defects,
+      required int dueWeek}) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(children: [
+          _statTile(Icons.apartment, '$active', 'Aktiv', kAccent),
+          _statDiv(),
+          _statTile(Icons.error_outline, '$overdue', 'Überfällig',
+              overdue > 0 ? kRed : kMuted),
+          _statDiv(),
+          _statTile(Icons.warning_amber_rounded, '$defects', 'Mängel',
+              defects > 0 ? kWarn : kMuted),
+          _statDiv(),
+          _statTile(Icons.event, '$dueWeek', 'Diese Woche', kInk2),
+        ]),
+      ),
     );
   }
+
+  Widget _statDiv() => Container(width: 1, height: 40, color: kLine);
+
+  Widget _statTile(IconData ic, String value, String label, Color c) =>
+      Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+          child: Column(children: [
+            Container(
+              width: 30,
+              height: 30,
+              decoration: BoxDecoration(
+                  color: c.withValues(alpha: .13),
+                  borderRadius: BorderRadius.circular(9)),
+              child: Icon(ic, size: 16, color: c),
+            ),
+            const SizedBox(height: 6),
+            Text(value,
+                style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -.5)),
+            Text(label,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                style: const TextStyle(
+                    fontSize: 10.5,
+                    color: kMuted,
+                    height: 1.15,
+                    fontWeight: FontWeight.w500)),
+          ]),
+        ),
+      );
+
+  // Tage bis Fälligkeit (negativ = überfällig); null wenn kein Termin.
+  int? _dueDays(Project p) {
+    if (p.due.isEmpty) return null;
+    final d = DateTime.tryParse(p.due);
+    if (d == null) return null;
+    final n = DateTime.now();
+    return DateTime(d.year, d.month, d.day)
+        .difference(DateTime(n.year, n.month, n.day))
+        .inDays;
+  }
+
+  bool _isOverdue(Project p) {
+    final d = _dueDays(p);
+    return d != null && d < 0;
+  }
+
+  String _hrs(double h) => h.toStringAsFixed(1).replaceAll('.', ',');
 }
 
 // ---------- Auftrag-Übersicht ----------
