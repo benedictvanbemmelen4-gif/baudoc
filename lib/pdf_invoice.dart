@@ -80,7 +80,125 @@ Future<Uint8List> buildProjectInvoicePdf(Project p,
   return doc.save();
 }
 
-pw.Widget _header(Project p, Customer? customer) {
+// Erzeugt ein Angebot / Kostenvoranschlag als PDF für einen Auftrag.
+// estHours × hourlyRate = geschätzte Arbeit; vatRate in Prozent (0 = ohne MwSt).
+Future<Uint8List> buildProjectQuotePdf(Project p,
+    {Customer? customer,
+    double estHours = 0,
+    double hourlyRate = 0,
+    List<Pauschale> pauschalen = const [],
+    double vatRate = 19,
+    String? validUntil}) async {
+  final doc = pw.Document();
+  final matCost = p.materials.fold<double>(0, (s, e) => s + e.qty * e.price);
+  final showLabor = estHours > 0 && hourlyRate > 0;
+  final labor = showLabor ? estHours * hourlyRate : 0.0;
+  final pausSum = pauschalen.fold<double>(0, (s, e) => s + e.amount);
+
+  doc.addPage(pw.MultiPage(
+    pageFormat: PdfPageFormat.a4,
+    margin: const pw.EdgeInsets.all(32),
+    build: (ctx) => [
+      _header(p, customer, title: 'Angebot / Kostenvoranschlag'),
+      pw.SizedBox(height: 16),
+      _materialSection(p, matCost),
+      if (showLabor) pw.SizedBox(height: 16),
+      if (showLabor) _estimateSection(estHours, hourlyRate, labor),
+      if (pauschalen.isNotEmpty) pw.SizedBox(height: 16),
+      if (pauschalen.isNotEmpty) _pauschalenSection(pauschalen, pausSum),
+      pw.SizedBox(height: 16),
+      _quoteTotals(matCost, labor, pausSum, vatRate),
+      pw.SizedBox(height: 16),
+      pw.Text(
+        'Angebot freibleibend.${validUntil != null && validUntil.isNotEmpty ? ' Gültig bis: ${dLong(validUntil)}' : ''}',
+        style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
+      ),
+    ],
+    footer: (ctx) => pw.Container(
+      alignment: pw.Alignment.centerRight,
+      margin: const pw.EdgeInsets.only(top: 12),
+      child: pw.Text(
+        'erstellt mit BauDoc · Seite ${ctx.pageNumber}/${ctx.pagesCount}',
+        style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey),
+      ),
+    ),
+  ));
+  return doc.save();
+}
+
+pw.Widget _estimateSection(double estHours, double hourlyRate, double labor) {
+  return pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+    pw.Text('Geschätzte Arbeit',
+        style:
+            const pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),
+    pw.SizedBox(height: 4),
+    pw.TableHelper.fromTextArray(
+      headers: ['Position', 'Std.', '€/h', 'Betrag'],
+      data: [
+        [
+          'Arbeitsleistung (geschätzt)',
+          _hours(estHours),
+          _eur(hourlyRate),
+          _eur(labor)
+        ],
+      ],
+      headerStyle:
+          const pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9),
+      cellStyle: const pw.TextStyle(fontSize: 9),
+      headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
+      cellAlignments: {
+        1: pw.Alignment.centerRight,
+        2: pw.Alignment.centerRight,
+        3: pw.Alignment.centerRight,
+      },
+      border: pw.TableBorder.all(color: PdfColors.grey400, width: .5),
+    ),
+  ]);
+}
+
+pw.Widget _quoteTotals(double mat, double labor, double paus, double vatRate) {
+  final netto = mat + labor + paus;
+  final mwst = netto * vatRate / 100;
+  final brutto = netto + mwst;
+  pw.Widget line(String k, String v, {bool bold = false}) => pw.Row(
+        mainAxisAlignment: pw.MainAxisAlignment.end,
+        children: [
+          pw.Text('$k  ',
+              style: pw.TextStyle(
+                  fontSize: 11,
+                  fontWeight:
+                      bold ? pw.FontWeight.bold : pw.FontWeight.normal)),
+          pw.SizedBox(
+            width: 100,
+            child: pw.Text(v,
+                textAlign: pw.TextAlign.right,
+                style: pw.TextStyle(
+                    fontSize: 11,
+                    fontWeight:
+                        bold ? pw.FontWeight.bold : pw.FontWeight.normal)),
+          ),
+        ],
+      );
+  return pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
+    pw.Divider(),
+    if (labor > 0) line('Arbeit (gesch.):', _eur(labor)),
+    line('Material:', _eur(mat)),
+    if (paus > 0) line('Pauschalen:', _eur(paus)),
+    if (vatRate > 0) ...[
+      pw.SizedBox(height: 2),
+      line('Netto:', _eur(netto)),
+      line('MwSt (${_hours(vatRate)} %):', _eur(mwst)),
+      pw.SizedBox(height: 2),
+      line('Brutto:', _eur(brutto), bold: true),
+    ] else ...[
+      pw.SizedBox(height: 2),
+      line('Gesamt:', _eur(netto), bold: true),
+    ],
+  ]);
+}
+
+pw.Widget _header(Project p, Customer? customer,
+    {String title = 'Leistungsnachweis / Rechnung'}) {
   pw.Widget row(String k, String v) => pw.Padding(
         padding: const pw.EdgeInsets.only(bottom: 2),
         child: pw.Row(children: [
@@ -95,7 +213,7 @@ pw.Widget _header(Project p, Customer? customer) {
         ]),
       );
   return pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-    pw.Text('Leistungsnachweis / Rechnung',
+    pw.Text(title,
         style:
             const pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold)),
     pw.SizedBox(height: 2),

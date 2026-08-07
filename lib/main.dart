@@ -14,21 +14,24 @@ import 'weather.dart';
 // Eine Datei, damit der Einstieg einfach bleibt. Später gern aufteilen.
 // ===================================================================
 
-// ---------- Konstanten ----------
-const kBg = Color(0xFF0E1218);
-const kBg2 = Color(0xFF151B24);
-const kCard = Color(0xFF1A212C);
-const kCard2 = Color(0xFF222B38);
-const kLine = Color(0xFF2A3340);
-const kInk = Color(0xFFEEF2F7);
-const kInk2 = Color(0xFFC2CCD8);
-const kMuted = Color(0xFF7D8A9A);
-const kAccent = Color(0xFFF6A623);
-const kAccentInk = Color(0xFF1A1300);
-const kGreen = Color(0xFF36C46A);
-const kBlue = Color(0xFF4F9DFF);
-const kViolet = Color(0xFFA78BFA);
-const kRed = Color(0xFFEF5F55);
+// ---------- Farbpalette ----------
+// Helles, professionelles Business-Theme mit Petrol/Teal-Akzent.
+// Die Namen sind semantisch (Hintergrund/Fläche/Text/Akzent), damit ein
+// Palettenwechsel zentral hier möglich bleibt.
+const kBg = Color(0xFFF5F7F9); // Seitenhintergrund (hellgrau)
+const kBg2 = Color(0xFFFFFFFF); // AppBar / Kopfflächen (weiß)
+const kCard = Color(0xFFFFFFFF); // Karten (weiß)
+const kCard2 = Color(0xFFEEF2F5); // Eingabefelder / dezente Flächen
+const kLine = Color(0xFFDDE3E9); // feine Ränder / Trennlinien
+const kInk = Color(0xFF0F1D28); // Haupttext (fast schwarz, leicht petrol)
+const kInk2 = Color(0xFF3E4C59); // Sekundärtext
+const kMuted = Color(0xFF6B7A88); // gedämpfter Text / Icons
+const kAccent = Color(0xFF0E7C86); // Akzent: Petrol/Teal
+const kAccentInk = Color(0xFFFFFFFF); // Text/Icon auf Akzentfläche
+const kGreen = Color(0xFF1E9E63); // Erfolg / offen
+const kBlue = Color(0xFF2563EB); // Info
+const kViolet = Color(0xFF7C3AED); // Akzent sekundär
+const kRed = Color(0xFFD64545); // Fehler / Löschen
 
 // Standard-Kategorien (Gewerke) – nur zum Erstbefüllen. Zur Laufzeit ist die
 // Liste über Store.I.arten pro Firma bearbeitbar und wird persistiert.
@@ -673,7 +676,7 @@ class BauDocApp extends StatelessWidget {
   const BauDocApp({super.key});
   @override
   Widget build(BuildContext context) {
-    final base = ThemeData.dark(useMaterial3: true);
+    final base = ThemeData.light(useMaterial3: true);
     return MaterialApp(
       title: 'BauDoc',
       debugShowCheckedModeBanner: false,
@@ -683,14 +686,75 @@ class BauDocApp extends StatelessWidget {
           primary: kAccent,
           secondary: kAccent,
           surface: kCard,
+          onSurface: kInk,
+          error: kRed,
         ),
+        textTheme: base.textTheme.apply(
+            bodyColor: kInk, displayColor: kInk, fontFamilyFallback: const [
+          'Segoe UI',
+          'Roboto',
+          'Helvetica',
+          'Arial'
+        ]),
         cardColor: kCard,
+        cardTheme: CardThemeData(
+          color: kCard,
+          elevation: 0,
+          margin: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: const BorderSide(color: kLine)),
+        ),
+        dividerTheme: const DividerThemeData(color: kLine, thickness: 1),
         appBarTheme: const AppBarTheme(
-            backgroundColor: kBg2, foregroundColor: kInk, elevation: 0),
+          backgroundColor: kBg2,
+          foregroundColor: kInk,
+          elevation: 0,
+          scrolledUnderElevation: 0.5,
+          surfaceTintColor: Colors.transparent,
+          shadowColor: Color(0x14000000),
+          centerTitle: false,
+          titleTextStyle: TextStyle(
+              color: kInk,
+              fontSize: 19,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -.2),
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: kAccent,
+            foregroundColor: kAccentInk,
+            elevation: 0,
+            padding:
+                const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+            textStyle: const TextStyle(
+                fontWeight: FontWeight.w700, fontSize: 15),
+          ),
+        ),
+        floatingActionButtonTheme: const FloatingActionButtonThemeData(
+          backgroundColor: kAccent,
+          foregroundColor: kAccentInk,
+          elevation: 2,
+        ),
+        chipTheme: base.chipTheme.copyWith(
+          backgroundColor: kCard2,
+          side: const BorderSide(color: kLine),
+          labelStyle: const TextStyle(color: kInk2, fontSize: 13),
+        ),
+        snackBarTheme: const SnackBarThemeData(
+          backgroundColor: kInk,
+          contentTextStyle: TextStyle(color: Colors.white),
+          behavior: SnackBarBehavior.floating,
+        ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: kCard2,
           hintStyle: const TextStyle(color: kMuted),
+          labelStyle: const TextStyle(color: kMuted),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
           border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
               borderSide: const BorderSide(color: kLine)),
@@ -699,7 +763,7 @@ class BauDocApp extends StatelessWidget {
               borderSide: const BorderSide(color: kLine)),
           focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: kAccent)),
+              borderSide: const BorderSide(color: kAccent, width: 1.6)),
         ),
       ),
       home: const RootGate(),
@@ -756,31 +820,46 @@ class _LoginScreenState extends State<LoginScreen> {
               padding: const EdgeInsets.all(20),
               shrinkWrap: true,
               children: [
-                const SizedBox(height: 24),
-                Container(
-                  width: 64,
-                  height: 64,
-                  decoration: BoxDecoration(
-                      color: kAccent.withValues(alpha: .13),
-                      borderRadius: BorderRadius.circular(20)),
-                  child: const Icon(Icons.apartment, color: kAccent, size: 34),
+                const SizedBox(height: 32),
+                Center(
+                  child: Container(
+                    width: 68,
+                    height: 68,
+                    decoration: BoxDecoration(
+                        color: kAccent,
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                              color: kAccent.withValues(alpha: .28),
+                              blurRadius: 18,
+                              offset: const Offset(0, 8))
+                        ]),
+                    child: const Icon(Icons.apartment,
+                        color: kAccentInk, size: 36),
+                  ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 16),
                 const Text('BauDoc',
                     textAlign: TextAlign.center,
-                    style:
-                        TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
+                    style: TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -.5)),
                 const SizedBox(height: 4),
-                const Text('Bitte anmelden',
+                const Text('Baustellen- & Auftragsdokumentation',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: kMuted)),
-                const SizedBox(height: 22),
+                    style: TextStyle(color: kMuted, fontSize: 14)),
+                const SizedBox(height: 24),
                 Card(
                   child: Padding(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(20),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        const Text('Anmeldung',
+                            style: TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.w700)),
+                        const SizedBox(height: 16),
                         const Text('Benutzer',
                             style: TextStyle(color: kMuted, fontSize: 13)),
                         const SizedBox(height: 6),
@@ -831,11 +910,31 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 14),
-                const Text(
-                  'Demo-Zugänge:\nAdministrator · PIN 0000\nBauleiter · PIN 1111\nBüro/Buchhaltung · PIN 2222',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: kMuted, fontSize: 12, height: 1.5),
+                const SizedBox(height: 18),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                      color: kCard2,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: kLine)),
+                  child: const Column(
+                    children: [
+                      Text('DEMO-ZUGÄNGE',
+                          style: TextStyle(
+                              color: kMuted,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 1)),
+                      SizedBox(height: 6),
+                      Text(
+                        'Administrator · 0000    Bauleiter · 1111    Büro · 2222',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            color: kInk2, fontSize: 12.5, height: 1.5),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -1085,14 +1184,33 @@ class _HomeScreenState extends State<HomeScreen> {
       final msg = filter != null
           ? 'Keine „$filter"-Aufträge unter ${tab == 'offen' ? 'Offen' : 'Abgeschlossen'}.'
           : (tab == 'offen'
-              ? 'Keine offenen Aufträge.\nTippe auf +, um einen anzulegen.'
-              : 'Noch keine abgeschlossenen Aufträge.');
+              ? 'Es sind keine offenen Aufträge vorhanden.\nMit „+" legen Sie einen neuen Auftrag an.'
+              : 'Es liegen noch keine abgeschlossenen Aufträge vor.');
       return Center(
-          child: Padding(
-        padding: const EdgeInsets.all(30),
-        child: Text(msg,
-            textAlign: TextAlign.center, style: const TextStyle(color: kMuted)),
-      ));
+        child: Padding(
+          padding: const EdgeInsets.all(30),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                    color: kCard2,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: kLine)),
+                child: const Icon(Icons.apartment_outlined,
+                    color: kMuted, size: 30),
+              ),
+              const SizedBox(height: 16),
+              Text(msg,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: kMuted, fontSize: 14, height: 1.5)),
+            ],
+          ),
+        ),
+      );
     }
     if (filter != null) {
       return ListView(
@@ -1103,7 +1221,9 @@ class _HomeScreenState extends State<HomeScreen> {
     // gruppiert nach Gewerk
     final groups = <String, List<Project>>{};
     for (final p in list) {
-      groups.putIfAbsent(p.type.isEmpty ? 'Ohne Art' : p.type, () => []).add(p);
+      groups
+          .putIfAbsent(p.type.isEmpty ? 'Ohne Kategorie' : p.type, () => [])
+          .add(p);
     }
     final keys = groups.keys.toList()..sort();
     return ListView(
@@ -1141,78 +1261,32 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _projectRow(Project p) {
     final pend = pending(p);
-    final sub = [
-      if (p.address.isNotEmpty) p.address,
-      '${sumHours(p).toStringAsFixed(sumHours(p) % 1 == 0 ? 0 : 1)} h',
-      eur(sumMaterial(p)),
-    ].join(' · ');
+    final col = p.isOpen ? kGreen : kInk2;
     return ListTile(
       onTap: () => Navigator.push(context,
           MaterialPageRoute(builder: (_) => ProjectScreen(projectId: p.id))),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
       leading: Container(
-        width: 42,
-        height: 42,
+        width: 44,
+        height: 44,
         decoration: BoxDecoration(
-            color: (p.isOpen ? kGreen : kInk2).withValues(alpha: .13),
+            color: col.withValues(alpha: .13),
             borderRadius: BorderRadius.circular(12)),
-        child:
-            Icon(Icons.apartment, color: p.isOpen ? kGreen : kInk2, size: 22),
+        child: Icon(Icons.apartment, color: col, size: 22),
       ),
-      isThreeLine: p.tasks.isNotEmpty,
-      title: Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(sub,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: kMuted)),
-          if (p.tasks.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 6, right: 8),
-              child: Row(children: [
-                Expanded(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: LinearProgressIndicator(
-                      value: p.tasks.where((t) => t.done).length /
-                          p.tasks.length,
-                      minHeight: 5,
-                      backgroundColor: kLine,
-                      valueColor: const AlwaysStoppedAnimation(kGreen),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                    '${p.tasks.where((t) => t.done).length}/${p.tasks.length}',
-                    style: const TextStyle(color: kMuted, fontSize: 11)),
-              ]),
-            ),
-        ],
-      ),
+      title: Text(p.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+              fontWeight: FontWeight.w700, fontSize: 15.5)),
       trailing: Row(mainAxisSize: MainAxisSize.min, children: [
         if (pend > 0)
           Padding(
-            padding: const EdgeInsets.only(right: 6),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.schedule, size: 14, color: kAccent),
-              Text('$pend',
-                  style: const TextStyle(
-                      color: kAccent, fontWeight: FontWeight.w700)),
-            ]),
+            padding: const EdgeInsets.only(right: 4),
+            child: Icon(Icons.cloud_upload_outlined,
+                size: 17, color: kAccent.withValues(alpha: .8)),
           ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-          decoration: BoxDecoration(
-              color: (p.isOpen ? kGreen : kMuted).withValues(alpha: .15),
-              borderRadius: BorderRadius.circular(20)),
-          child: Text(p.isOpen ? 'Offen' : 'Abgeschlossen',
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: p.isOpen ? kGreen : kMuted)),
-        ),
+        const Icon(Icons.chevron_right, color: kMuted),
       ]),
     );
   }
@@ -1240,8 +1314,14 @@ class ProjectScreen extends StatelessWidget {
           appBar: AppBar(title: Text(p.name), actions: [
             if (Store.I.can('exportDocs'))
               IconButton(
+                icon: const Icon(Icons.request_quote_outlined),
+                tooltip: 'Angebot als PDF',
+                onPressed: () => exportProjectQuote(context, p),
+              ),
+            if (Store.I.can('exportDocs'))
+              IconButton(
                 icon: const Icon(Icons.picture_as_pdf_outlined),
-                tooltip: 'Als PDF exportieren',
+                tooltip: 'Rechnung als PDF',
                 onPressed: () => exportProjectPdf(context, p),
               ),
           ]),
@@ -2176,16 +2256,32 @@ Future<T?> _sheet<T>(
   return showModalBottomSheet<T>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: kBg2,
+    backgroundColor: kBg,
     shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
     builder: (ctx) => Padding(
       padding: EdgeInsets.only(
           left: 18,
           right: 18,
-          top: 18,
+          top: 10,
           bottom: 18 + MediaQuery.of(ctx).viewInsets.bottom),
-      child: builder(ctx),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Center(
+            child: Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 14),
+              decoration: BoxDecoration(
+                  color: kLine,
+                  borderRadius: BorderRadius.circular(4)),
+            ),
+          ),
+          Flexible(child: builder(ctx)),
+        ],
+      ),
     ),
   );
 }
@@ -2294,6 +2390,131 @@ Future<void> exportProjectPdf(BuildContext context, Project p) async {
             final fname = 'baudoc_${_fileSlug(p.name)}_${today()}.pdf';
             await downloadBytes(fname, bytes, 'application/pdf');
             if (context.mounted) snack(context, 'PDF erstellt: $fname');
+          }),
+        ],
+      );
+    });
+  });
+}
+
+Future<void> exportProjectQuote(BuildContext context, Project p) async {
+  final hoursC = TextEditingController();
+  final rateC = TextEditingController();
+  final vatC = TextEditingController(text: '19');
+  String validUntil = '';
+  final sel = <String>{}; // ausgewählte Pauschalen-IDs
+  await _sheet(context, (ctx) {
+    return StatefulBuilder(builder: (ctx, setSt) {
+      final paus = Store.I.pauschalen;
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Angebot exportieren',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          const Text(
+              'Angebot / Kostenvoranschlag: Material aus dem Auftrag plus '
+              'geschätzte Arbeit, mit MwSt-Ausweis.',
+              style: TextStyle(color: kMuted, fontSize: 13)),
+          Row(children: [
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _label('Geschätzte Stunden'),
+                    TextField(
+                        controller: hoursC,
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
+                        decoration:
+                            const InputDecoration(hintText: 'z. B. 8')),
+                  ]),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _label('Stundensatz (€/h)'),
+                    TextField(
+                        controller: rateC,
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
+                        decoration:
+                            const InputDecoration(hintText: 'z. B. 55')),
+                  ]),
+            ),
+          ]),
+          Row(children: [
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _label('MwSt (%)'),
+                    TextField(
+                        controller: vatC,
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
+                        decoration: const InputDecoration(
+                            hintText: '19 – 0 = ohne')),
+                  ]),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _label('Gültig bis'),
+                    _pickField('Datum', validUntil, () async {
+                      final r = await pickDate(ctx, validUntil);
+                      if (r != null) setSt(() => validUntil = r);
+                    }),
+                  ]),
+            ),
+          ]),
+          if (paus.isNotEmpty) ...[
+            _label('Pauschalen aufschlagen'),
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  children: paus
+                      .map((pa) => CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            controlAffinity: ListTileControlAffinity.leading,
+                            activeColor: kAccent,
+                            value: sel.contains(pa.id),
+                            onChanged: (v) => setSt(() {
+                              if (v == true) {
+                                sel.add(pa.id);
+                              } else {
+                                sel.remove(pa.id);
+                              }
+                            }),
+                            title: Text(pa.name),
+                            secondary: Text(eur(pa.amount)),
+                          ))
+                      .toList(),
+                ),
+              ),
+            ),
+          ],
+          _saveBtn('Angebot erstellen', () async {
+            Navigator.pop(ctx);
+            double parse(String s) =>
+                double.tryParse(s.trim().replaceAll(',', '.')) ?? 0;
+            final chosen =
+                Store.I.pauschalen.where((pa) => sel.contains(pa.id)).toList();
+            final bytes = await buildProjectQuotePdf(p,
+                customer: Store.I.customerById(p.customerId),
+                estHours: parse(hoursC.text),
+                hourlyRate: parse(rateC.text),
+                pauschalen: chosen,
+                vatRate: parse(vatC.text),
+                validUntil: validUntil);
+            final fname = 'baudoc_angebot_${_fileSlug(p.name)}_${today()}.pdf';
+            await downloadBytes(fname, bytes, 'application/pdf');
+            if (context.mounted) snack(context, 'Angebot erstellt: $fname');
           }),
         ],
       );
