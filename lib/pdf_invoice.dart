@@ -4,39 +4,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
 import 'main.dart' show Project, Customer, Pauschale, dLong, today;
-
-// Zahl mit Dezimalkomma (deutsche Schreibweise).
-String _n(num v) => v.toStringAsFixed(2).replaceAll('.', ',');
-// Die eingebauten PDF-Standardfonts können das €-Glyph (U+20AC) nicht zeichnen;
-// "EUR" ist auf deutschen Rechnungen ohnehin üblich und bleibt lesbar.
-String _eur(num v) => '${_n(v)} EUR';
-// Stunden ohne unnötige Nachkommastellen.
-String _hours(double h) => h % 1 == 0 ? h.toStringAsFixed(0) : _n(h);
-
-// Nutzertext auf Latin-1 abbilden: die Standardfonts decken WinAnsi ab
-// (inkl. Umlaute/ß), aber keine typografischen Sonderzeichen. Häufige davon
-// ersetzen, alles andere außerhalb Latin-1 als '?' – so bleiben keine
-// stillen Lücken im PDF.
-String _s(String t) {
-  const map = {
-    '–': '-', '—': '-', '‑': '-',
-    '„': '"', '“': '"', '”': '"', '‟': '"',
-    '‘': "'", '’': "'", '‚': "'",
-    '…': '...', '€': 'EUR', ' ': ' ',
-  };
-  final b = StringBuffer();
-  for (final r in t.runes) {
-    final ch = String.fromCharCode(r);
-    if (map.containsKey(ch)) {
-      b.write(map[ch]);
-    } else if (r <= 0xFF) {
-      b.write(ch);
-    } else {
-      b.write('?');
-    }
-  }
-  return b.toString();
-}
+import 'pdf_common.dart';
 
 // Erzeugt einen Leistungsnachweis/Rechnung als PDF für einen Auftrag.
 // wages: Mitarbeitername → Stundenlohn (€/h); Lohn wird je Mitarbeiter
@@ -68,14 +36,7 @@ Future<Uint8List> buildProjectInvoicePdf(Project p,
       pw.SizedBox(height: 16),
       _totals(matCost, lohn, pausSum, gesamt, showLohn, pauschalen.isNotEmpty),
     ],
-    footer: (ctx) => pw.Container(
-      alignment: pw.Alignment.centerRight,
-      margin: const pw.EdgeInsets.only(top: 12),
-      child: pw.Text(
-        'erstellt mit BauDoc · Seite ${ctx.pageNumber}/${ctx.pagesCount}',
-        style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey),
-      ),
-    ),
+    footer: pdfFooter,
   ));
   return doc.save();
 }
@@ -114,44 +75,26 @@ Future<Uint8List> buildProjectQuotePdf(Project p,
         style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
       ),
     ],
-    footer: (ctx) => pw.Container(
-      alignment: pw.Alignment.centerRight,
-      margin: const pw.EdgeInsets.only(top: 12),
-      child: pw.Text(
-        'erstellt mit BauDoc · Seite ${ctx.pageNumber}/${ctx.pagesCount}',
-        style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey),
-      ),
-    ),
+    footer: pdfFooter,
   ));
   return doc.save();
 }
 
 pw.Widget _estimateSection(double estHours, double hourlyRate, double labor) {
   return pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-    pw.Text('Geschätzte Arbeit',
-        style:
-            const pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),
+    pdfSectionTitle('Geschätzte Arbeit'),
     pw.SizedBox(height: 4),
-    pw.TableHelper.fromTextArray(
+    pdfTable(
       headers: ['Position', 'Std.', '€/h', 'Betrag'],
       data: [
         [
           'Arbeitsleistung (geschätzt)',
-          _hours(estHours),
-          _eur(hourlyRate),
-          _eur(labor)
+          pdfHours(estHours),
+          pdfEur(hourlyRate),
+          pdfEur(labor)
         ],
       ],
-      headerStyle:
-          const pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9),
-      cellStyle: const pw.TextStyle(fontSize: 9),
-      headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
-      cellAlignments: {
-        1: pw.Alignment.centerRight,
-        2: pw.Alignment.centerRight,
-        3: pw.Alignment.centerRight,
-      },
-      border: pw.TableBorder.all(color: PdfColors.grey400, width: .5),
+      rightAligned: const {1, 2, 3},
     ),
   ]);
 }
@@ -160,39 +103,20 @@ pw.Widget _quoteTotals(double mat, double labor, double paus, double vatRate) {
   final netto = mat + labor + paus;
   final mwst = netto * vatRate / 100;
   final brutto = netto + mwst;
-  pw.Widget line(String k, String v, {bool bold = false}) => pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.end,
-        children: [
-          pw.Text('$k  ',
-              style: pw.TextStyle(
-                  fontSize: 11,
-                  fontWeight:
-                      bold ? pw.FontWeight.bold : pw.FontWeight.normal)),
-          pw.SizedBox(
-            width: 100,
-            child: pw.Text(v,
-                textAlign: pw.TextAlign.right,
-                style: pw.TextStyle(
-                    fontSize: 11,
-                    fontWeight:
-                        bold ? pw.FontWeight.bold : pw.FontWeight.normal)),
-          ),
-        ],
-      );
   return pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
     pw.Divider(),
-    if (labor > 0) line('Arbeit (gesch.):', _eur(labor)),
-    line('Material:', _eur(mat)),
-    if (paus > 0) line('Pauschalen:', _eur(paus)),
+    if (labor > 0) pdfTotalLine('Arbeit (gesch.):', pdfEur(labor)),
+    pdfTotalLine('Material:', pdfEur(mat)),
+    if (paus > 0) pdfTotalLine('Pauschalen:', pdfEur(paus)),
     if (vatRate > 0) ...[
       pw.SizedBox(height: 2),
-      line('Netto:', _eur(netto)),
-      line('MwSt (${_hours(vatRate)} %):', _eur(mwst)),
+      pdfTotalLine('Netto:', pdfEur(netto)),
+      pdfTotalLine('MwSt (${pdfHours(vatRate)} %):', pdfEur(mwst)),
       pw.SizedBox(height: 2),
-      line('Brutto:', _eur(brutto), bold: true),
+      pdfTotalLine('Brutto:', pdfEur(brutto), bold: true),
     ] else ...[
       pw.SizedBox(height: 2),
-      line('Gesamt:', _eur(netto), bold: true),
+      pdfTotalLine('Gesamt:', pdfEur(netto), bold: true),
     ],
   ]);
 }
@@ -217,15 +141,15 @@ pw.Widget _header(Project p, Customer? customer,
         style:
             const pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold)),
     pw.SizedBox(height: 2),
-    pw.Text(_s(p.name), style: const pw.TextStyle(fontSize: 14)),
+    pw.Text(pdfText(p.name), style: const pw.TextStyle(fontSize: 14)),
     pw.Divider(),
-    if (customer != null) row('Kunde:', _s(customer.name)),
+    if (customer != null) row('Kunde:', pdfText(customer.name)),
     if (customer != null && customer.address.isNotEmpty)
-      row('Anschrift:', _s(customer.address)),
+      row('Anschrift:', pdfText(customer.address)),
     if (customer != null && customer.contact.isNotEmpty)
-      row('Kontakt:', _s(customer.contact)),
-    if (p.type.isNotEmpty) row('Gewerk:', _s(p.type)),
-    if (p.address.isNotEmpty) row('Adresse:', _s(p.address)),
+      row('Kontakt:', pdfText(customer.contact)),
+    if (p.type.isNotEmpty) row('Gewerk:', pdfText(p.type)),
+    if (p.address.isNotEmpty) row('Adresse:', pdfText(p.address)),
     row('Status:', p.isOpen ? 'Aktiv' : 'Abgeschlossen'),
     if (p.date.isNotEmpty) row('Start:', dLong(p.date)),
     if (p.due.isNotEmpty) row('Fällig:', dLong(p.due)),
@@ -239,43 +163,32 @@ pw.Widget _hoursSection(Project p, double Function(String) wageFor,
       ? ['Datum', 'Mitarbeiter', 'Tätigkeit', 'Std.', '€/h', 'Betrag']
       : ['Datum', 'Mitarbeiter', 'Tätigkeit', 'Std.'];
   final data = p.hours.map((h) {
-    final r = [dLong(h.date), _s(h.worker), _s(h.task), _hours(h.h)];
+    final r = [dLong(h.date), pdfText(h.worker), pdfText(h.task), pdfHours(h.h)];
     if (showLohn) {
-      r.add(_eur(wageFor(h.worker)));
-      r.add(_eur(h.h * wageFor(h.worker)));
+      r.add(pdfEur(wageFor(h.worker)));
+      r.add(pdfEur(h.h * wageFor(h.worker)));
     }
     return r;
   }).toList();
   return pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-    pw.Text('Arbeitsstunden',
-        style:
-            const pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),
+    pdfSectionTitle('Arbeitsstunden'),
     pw.SizedBox(height: 4),
     if (p.hours.isEmpty)
       pw.Text('Keine Einträge.',
           style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey))
     else
-      pw.TableHelper.fromTextArray(
+      pdfTable(
         headers: headers,
         data: data,
-        headerStyle:
-            const pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9),
-        cellStyle: const pw.TextStyle(fontSize: 9),
-        headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
-        cellAlignments: {
-          3: pw.Alignment.centerRight,
-          4: pw.Alignment.centerRight,
-          5: pw.Alignment.centerRight,
-        },
-        border: pw.TableBorder.all(color: PdfColors.grey400, width: .5),
+        rightAligned: const {3, 4, 5},
       ),
     pw.SizedBox(height: 4),
     pw.Align(
       alignment: pw.Alignment.centerRight,
       child: pw.Text(
         showLohn
-            ? 'Summe Stunden: ${_hours(totalH)} h · Lohn: ${_eur(lohn)}'
-            : 'Summe Stunden: ${_hours(totalH)} h',
+            ? 'Summe Stunden: ${pdfHours(totalH)} h · Lohn: ${pdfEur(lohn)}'
+            : 'Summe Stunden: ${pdfHours(totalH)} h',
         style:
             const pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold),
       ),
@@ -285,24 +198,17 @@ pw.Widget _hoursSection(Project p, double Function(String) wageFor,
 
 pw.Widget _pauschalenSection(List<Pauschale> items, double sum) {
   return pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-    pw.Text('Pauschalen',
-        style:
-            const pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),
+    pdfSectionTitle('Pauschalen'),
     pw.SizedBox(height: 4),
-    pw.TableHelper.fromTextArray(
+    pdfTable(
       headers: ['Bezeichnung', 'Betrag'],
-      data: items.map((e) => [_s(e.name), _eur(e.amount)]).toList(),
-      headerStyle:
-          const pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9),
-      cellStyle: const pw.TextStyle(fontSize: 9),
-      headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
-      cellAlignments: {1: pw.Alignment.centerRight},
-      border: pw.TableBorder.all(color: PdfColors.grey400, width: .5),
+      data: items.map((e) => [pdfText(e.name), pdfEur(e.amount)]).toList(),
+      rightAligned: const {1},
     ),
     pw.SizedBox(height: 4),
     pw.Align(
       alignment: pw.Alignment.centerRight,
-      child: pw.Text('Summe Pauschalen: ${_eur(sum)}',
+      child: pw.Text('Summe Pauschalen: ${pdfEur(sum)}',
           style: const pw.TextStyle(
               fontSize: 10, fontWeight: pw.FontWeight.bold)),
     ),
@@ -312,40 +218,29 @@ pw.Widget _pauschalenSection(List<Pauschale> items, double sum) {
 pw.Widget _materialSection(Project p, double matCost) {
   final data = p.materials
       .map((m) => [
-            _s(m.name),
-            _n(m.qty),
-            _s(m.unit),
-            _eur(m.price),
-            _eur(m.qty * m.price),
+            pdfText(m.name),
+            pdfNum(m.qty),
+            pdfText(m.unit),
+            pdfEur(m.price),
+            pdfEur(m.qty * m.price),
           ])
       .toList();
   return pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-    pw.Text('Material',
-        style:
-            const pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),
+    pdfSectionTitle('Material'),
     pw.SizedBox(height: 4),
     if (p.materials.isEmpty)
       pw.Text('Keine Einträge.',
           style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey))
     else
-      pw.TableHelper.fromTextArray(
+      pdfTable(
         headers: ['Bezeichnung', 'Menge', 'Einheit', 'Einzelpreis', 'Gesamt'],
         data: data,
-        headerStyle:
-            const pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9),
-        cellStyle: const pw.TextStyle(fontSize: 9),
-        headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
-        cellAlignments: {
-          1: pw.Alignment.centerRight,
-          3: pw.Alignment.centerRight,
-          4: pw.Alignment.centerRight,
-        },
-        border: pw.TableBorder.all(color: PdfColors.grey400, width: .5),
+        rightAligned: const {1, 3, 4},
       ),
     pw.SizedBox(height: 4),
     pw.Align(
       alignment: pw.Alignment.centerRight,
-      child: pw.Text('Summe Material: ${_eur(matCost)}',
+      child: pw.Text('Summe Material: ${pdfEur(matCost)}',
           style: const pw.TextStyle(
               fontSize: 10, fontWeight: pw.FontWeight.bold)),
     ),
@@ -354,31 +249,12 @@ pw.Widget _materialSection(Project p, double matCost) {
 
 pw.Widget _totals(double mat, double lohn, double paus, double gesamt,
     bool showLohn, bool showPaus) {
-  pw.Widget line(String k, String v, {bool bold = false}) => pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.end,
-        children: [
-          pw.Text('$k  ',
-              style: pw.TextStyle(
-                  fontSize: 11,
-                  fontWeight:
-                      bold ? pw.FontWeight.bold : pw.FontWeight.normal)),
-          pw.SizedBox(
-            width: 100,
-            child: pw.Text(v,
-                textAlign: pw.TextAlign.right,
-                style: pw.TextStyle(
-                    fontSize: 11,
-                    fontWeight:
-                        bold ? pw.FontWeight.bold : pw.FontWeight.normal)),
-          ),
-        ],
-      );
   return pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
     pw.Divider(),
-    if (showLohn) line('Lohn:', _eur(lohn)),
-    line('Material:', _eur(mat)),
-    if (showPaus) line('Pauschalen:', _eur(paus)),
+    if (showLohn) pdfTotalLine('Lohn:', pdfEur(lohn)),
+    pdfTotalLine('Material:', pdfEur(mat)),
+    if (showPaus) pdfTotalLine('Pauschalen:', pdfEur(paus)),
     pw.SizedBox(height: 2),
-    line('Gesamt:', _eur(gesamt), bold: true),
+    pdfTotalLine('Gesamt:', pdfEur(gesamt), bold: true),
   ]);
 }

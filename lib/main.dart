@@ -11,6 +11,8 @@ import 'weather.dart';
 // Zeiterfassung (eigenes Modul unter lib/timetracking/).
 import 'timetracking/tracking_bridge.dart';
 import 'timetracking/ui/tracking_ui.dart';
+// Auswertung der Stunden über alle Aufträge (lib/timesheet/).
+import 'timesheet/timesheet_screen.dart';
 
 // ===================================================================
 // BauDoc – Flutter/Dart-Portierung des HTML-Prototyps
@@ -3131,7 +3133,7 @@ Widget _saveBtn(String label, VoidCallback onTap) => Padding(
     );
 
 // ---- PDF-Export (Leistungsnachweis / Rechnung pro Auftrag) ----
-String _fileSlug(String s) {
+String fileSlug(String s) {
   final slug = s
       .toLowerCase()
       .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
@@ -3190,7 +3192,7 @@ Future<void> exportProjectPdf(BuildContext context, Project p) async {
                 customer: Store.I.customerById(p.customerId),
                 wages: wages,
                 pauschalen: chosen);
-            final fname = 'baudoc_${_fileSlug(p.name)}_${today()}.pdf';
+            final fname = 'baudoc_${fileSlug(p.name)}_${today()}.pdf';
             await downloadBytes(fname, bytes, 'application/pdf');
             if (context.mounted) snack(context, 'PDF erstellt: $fname');
           }),
@@ -3314,7 +3316,7 @@ Future<void> exportProjectQuote(BuildContext context, Project p) async {
                 pauschalen: chosen,
                 vatRate: parse(vatC.text),
                 validUntil: validUntil);
-            final fname = 'baudoc_angebot_${_fileSlug(p.name)}_${today()}.pdf';
+            final fname = 'baudoc_angebot_${fileSlug(p.name)}_${today()}.pdf';
             await downloadBytes(fname, bytes, 'application/pdf');
             if (context.mounted) snack(context, 'Angebot erstellt: $fname');
           }),
@@ -3325,7 +3327,7 @@ Future<void> exportProjectQuote(BuildContext context, Project p) async {
 }
 
 // ---- CSV-Export ----
-String _csvCell(String s) {
+String csvCell(String s) {
   if (s.contains('"') ||
       s.contains(';') ||
       s.contains(',') ||
@@ -3335,7 +3337,7 @@ String _csvCell(String s) {
   return s;
 }
 
-String _num(num n) => n.toStringAsFixed(2).replaceAll('.', ',');
+String csvNum(num n) => n.toStringAsFixed(2).replaceAll('.', ',');
 
 // Eine Zeile pro Auftrag, inkl. Stunden- und Materialkosten-Summe.
 // Semikolon als Trenner + Dezimalkomma → öffnet sauber in deutschem Excel.
@@ -3353,7 +3355,7 @@ String buildProjectsCsv(List<Project> projects) {
     'Materialkosten (€)',
     'Aufgaben erledigt',
     'Aufgaben gesamt',
-  ].map(_csvCell).join(sep));
+  ].map(csvCell).join(sep));
   for (final p in projects) {
     final totalH = p.hours.fold<double>(0, (s, e) => s + e.h);
     final matCost = p.materials.fold<double>(0, (s, e) => s + e.qty * e.price);
@@ -3365,11 +3367,11 @@ String buildProjectsCsv(List<Project> projects) {
       p.isOpen ? 'Aktiv' : 'Abgeschlossen',
       dLong(p.date),
       dLong(p.due),
-      _num(totalH),
-      _num(matCost),
+      csvNum(totalH),
+      csvNum(matCost),
       '$doneTasks',
       '${p.tasks.length}',
-    ].map(_csvCell).join(sep));
+    ].map(csvCell).join(sep));
   }
   return rows.join('\r\n');
 }
@@ -3625,6 +3627,27 @@ void showProfileSheet(BuildContext context) {
             ),
             const SizedBox(height: 8),
           ],
+          // Stunden über alle Aufträge. Für jeden sichtbar – wie viel davon,
+          // entscheiden die Rechte im TimesheetScreen selbst.
+          ListTile(
+            onTap: () {
+              Navigator.pop(ctx);
+              Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => const TimesheetScreen()));
+            },
+            leading: Icon(Icons.assignment_outlined, color: kAccent),
+            title: Text(
+                Store.I.can('exportDocs') ? 'Stundenzettel' : 'Meine Stunden'),
+            subtitle: Text(
+                Store.I.can('exportDocs')
+                    ? 'Alle Mitarbeiter, mit CSV- und PDF-Export'
+                    : 'Meine Woche im Überblick',
+                style: TextStyle(color: kMuted, fontSize: 12)),
+            tileColor: kCard,
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+          const SizedBox(height: 8),
           if (Store.I.can('exportDocs')) ...[
             ListTile(
               onTap: () async {
