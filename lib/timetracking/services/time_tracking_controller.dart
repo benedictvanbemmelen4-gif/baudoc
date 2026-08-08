@@ -192,8 +192,13 @@ class TimeTrackingController extends ChangeNotifier {
 
   /// Tagesabschluss mit Pausenabzug. Ohne Angabe wird der gesetzliche
   /// Mindestabzug vorgeschlagen.
-  Future<void> finalizeEntry({int? breakMinutes}) {
+  ///
+  /// [task] ist die Tätigkeitsbeschreibung, die in die Auftragsstunden
+  /// übernommen wird. Sie wird direkt am laufenden Eintrag gesetzt – der
+  /// Automat kennt keine Tätigkeiten, das ist reine Beschriftung.
+  Future<void> finalizeEntry({int? breakMinutes, String? task}) {
     final s = _session;
+    if (s != null && task != null) s.entry.task = task;
     final suggested = s == null
         ? 0
         : TrackingRules.suggestedAdditionalBreak(
@@ -217,9 +222,14 @@ class TimeTrackingController extends ChangeNotifier {
   }
 
   /// Nachträgliche Korrektur durch Büro/Meister.
+  ///
+  /// Die Auftragsstunden werden mitgezogen: bestätigt das Büro einen zuvor
+  /// verworfenen Eintrag, muss er auftauchen – und umgekehrt verschwinden.
+  /// Die Übernahme ist über die Eintrags-ID idempotent.
   Future<void> reviewEntry(TimeEntry entry) async {
     await repository.updateEntry(entry);
     _entries = await repository.loadEntries();
+    onEntryCompleted?.call(entry);
     notifyListeners();
   }
 
@@ -310,10 +320,10 @@ class TimeTrackingController extends ChangeNotifier {
     switch (effect) {
       case PersistCompletedEntry(:final entry):
         await repository.appendEntry(entry);
-        // Verworfene Einträge nicht in die Auftragsstunden übernehmen.
-        if (entry.status != TimeEntryStatus.rejected) {
-          onEntryCompleted?.call(entry);
-        }
+        // Auch verworfene Einträge werden gemeldet: der Empfänger entscheidet,
+        // ob er sie schreibt oder eine früher geschriebene Zeile wieder
+        // entfernt (siehe tracking_bridge.dart).
+        onEntryCompleted?.call(entry);
 
       case ShowArrivalNotification(:final orderId, :final arrivalTime):
         await notifications.showArrival(

@@ -8,6 +8,10 @@ import 'csv_export_io.dart' if (dart.library.js_interop) 'csv_export_web.dart';
 import 'pdf_invoice.dart';
 import 'weather.dart';
 
+// Zeiterfassung (eigenes Modul unter lib/timetracking/).
+import 'timetracking/tracking_bridge.dart';
+import 'timetracking/ui/tracking_ui.dart';
+
 // ===================================================================
 // BauDoc – Flutter/Dart-Portierung des HTML-Prototyps
 // Eine Datei, damit der Einstieg einfach bleibt. Später gern aufteilen.
@@ -703,6 +707,8 @@ Color tradeColor(String type) {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Store.I.load();
+  // Stellt einen laufenden Timer nach App-Neustart oder OS-Kill wieder her.
+  await initTimeTracking();
   runApp(const BauDocApp());
 }
 
@@ -1129,6 +1135,9 @@ class _HomeScreenState extends State<HomeScreen> {
           if (wide) return _wideBody(context, data);
           return Column(
             children: [
+              // Laufende/unbestätigte Zeiterfassung – zeigt sich nur, wenn es
+              // etwas zu sehen gibt, und ist das Netz für ignorierte Pushs.
+              const TrackingBanner(),
               // Kennzahlen-Strip
               Padding(
                 padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
@@ -1338,6 +1347,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       children: [
         _topBar(context, d),
+        const TrackingBanner(),
         Expanded(
           child: SingleChildScrollView(
             child: Center(
@@ -2141,6 +2151,8 @@ class ProjectScreen extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 14),
+              ProjectTrackingCard(project: p),
+              const SizedBox(height: 4),
               Card(
                 child: Column(children: [
                   _navTile(
@@ -2724,6 +2736,28 @@ class AdminScreen extends StatelessWidget {
         if (s.can('categories')) {
           tile('categories', Icons.category_outlined, kBlue,
               'Kategorien / Gewerke', '${s.arten.length} Kategorien');
+        }
+        // Prüfliste der Zeiterfassung: unbestätigte und automatisch beendete
+        // Zeiten, die Büro/Meister freigeben oder korrigieren müssen.
+        if (s.can('editProjects')) {
+          final open = gTracking.entriesNeedingReview.length;
+          tiles.add(Card(
+            margin: const EdgeInsets.only(bottom: 10),
+            child: ListTile(
+              leading: Icon(Icons.fact_check_outlined,
+                  color: open > 0 ? kWarn : kGreen),
+              title: const Text('Zeiten prüfen',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: Text(
+                  open > 0
+                      ? '$open Eintrag${open == 1 ? '' : 'e'} offen'
+                      : 'Alles bestätigt',
+                  style: TextStyle(color: kMuted)),
+              trailing: Icon(Icons.chevron_right, color: kMuted),
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => const TrackingReviewScreen())),
+            ),
+          ));
         }
 
         return Scaffold(
