@@ -4,8 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // Plattform-spezifischer Datei-Export (Web-Download vs. Teilen-Dialog).
-import 'csv_export_io.dart'
-    if (dart.library.js_interop) 'csv_export_web.dart';
+import 'csv_export_io.dart' if (dart.library.js_interop) 'csv_export_web.dart';
 import 'pdf_invoice.dart';
 import 'weather.dart';
 
@@ -18,20 +17,27 @@ import 'weather.dart';
 // Helles, professionelles Business-Theme mit Petrol/Teal-Akzent.
 // Die Namen sind semantisch (Hintergrund/Fläche/Text/Akzent), damit ein
 // Palettenwechsel zentral hier möglich bleibt.
-const kBg = Color(0xFFF5F7F9); // Seitenhintergrund (hellgrau)
-const kBg2 = Color(0xFFFFFFFF); // AppBar / Kopfflächen (weiß)
-const kCard = Color(0xFFFFFFFF); // Karten (weiß)
-const kCard2 = Color(0xFFEEF2F5); // Eingabefelder / dezente Flächen
-const kLine = Color(0xFFDDE3E9); // feine Ränder / Trennlinien
-const kInk = Color(0xFF0F1D28); // Haupttext (fast schwarz, leicht petrol)
-const kInk2 = Color(0xFF3E4C59); // Sekundärtext
-const kMuted = Color(0xFF6B7A88); // gedämpfter Text / Icons
-const kAccent = Color(0xFF0E7C86); // Akzent: Petrol/Teal
-const kAccentInk = Color(0xFFFFFFFF); // Text/Icon auf Akzentfläche
-const kGreen = Color(0xFF1E9E63); // Erfolg / offen
-const kBlue = Color(0xFF2563EB); // Info
-const kViolet = Color(0xFF7C3AED); // Akzent sekundär
-const kRed = Color(0xFFD64545); // Fehler / Löschen
+// ---- Farbpalette: hell/dunkel zur Laufzeit umschaltbar ----
+// gDark schaltet alle semantischen Farben um; die MaterialApp wird bei
+// Änderung neu gebaut (ValueListenableBuilder in BauDocApp); die Wahl wird
+// in SharedPreferences persistiert (Store.setDarkMode → übersteht Neustart).
+final ValueNotifier<bool> gDark = ValueNotifier<bool>(false);
+Color _pick(int light, int dark) => Color(gDark.value ? dark : light);
+
+Color get kBg => _pick(0xFFF5F7F9, 0xFF0E1218); // Seitenhintergrund
+Color get kBg2 => _pick(0xFFFFFFFF, 0xFF161C24); // AppBar / Kopfflächen
+Color get kCard => _pick(0xFFFFFFFF, 0xFF161C24); // Karten
+Color get kCard2 => _pick(0xFFEEF2F5, 0xFF1B222B); // Eingabefelder / Flächen
+Color get kLine => _pick(0xFFDDE3E9, 0xFF252D38); // feine Ränder / Trennlinien
+Color get kInk => _pick(0xFF0F1D28, 0xFFE7ECF2); // Haupttext
+Color get kInk2 => _pick(0xFF3E4C59, 0xFFA7B1BE); // Sekundärtext
+Color get kMuted => _pick(0xFF6B7A88, 0xFF6C7784); // gedämpfter Text / Icons
+Color get kAccent => _pick(0xFF0E7C86, 0xFF2BA6B1); // Akzent: Petrol/Teal
+Color get kAccentInk => _pick(0xFFFFFFFF, 0xFFFFFFFF); // Text/Icon auf Akzent
+Color get kGreen => _pick(0xFF1E9E63, 0xFF4CB47B); // Erfolg / offen
+Color get kBlue => _pick(0xFF2563EB, 0xFF6C9BF5); // Info
+Color get kViolet => _pick(0xFF7C3AED, 0xFFA78BFA); // Akzent sekundär
+Color get kRed => _pick(0xFFD64545, 0xFFF0716C); // Fehler / Löschen
 
 // Standard-Kategorien (Gewerke) – nur zum Erstbefüllen. Zur Laufzeit ist die
 // Liste über Store.I.arten pro Firma bearbeitbar und wird persistiert.
@@ -379,7 +385,8 @@ class Store extends ChangeNotifier {
   List<Pauschale> pauschalen = [];
   List<Project> projects = [];
   List<AppUser> users = [];
-  List<String> arten = List.of(defaultArten); // Kategorien/Gewerke (bearbeitbar)
+  List<String> arten =
+      List.of(defaultArten); // Kategorien/Gewerke (bearbeitbar)
   List<String> roles = List.of(defaultRollen); // Rollen (bearbeitbar)
   Map<String, List<String>> rolePerms = {}; // Rolle → Rechte-Schlüssel
   bool online = true;
@@ -425,6 +432,7 @@ class Store extends ChangeNotifier {
 
   Future<void> load() async {
     _p = await SharedPreferences.getInstance();
+    gDark.value = _p.getBool('darkMode') ?? false;
     final raw = _p.getString(_key);
     var ok = false;
     if (raw != null) {
@@ -483,6 +491,11 @@ class Store extends ChangeNotifier {
     } else {
       _p.remove(_skey);
     }
+  }
+
+  void setDarkMode(bool v) {
+    gDark.value = v;
+    _p.setBool('darkMode', v);
   }
 
   Map<String, dynamic> _toJson() => {
@@ -664,7 +677,7 @@ int pending(Project p) =>
     p.materials.where((m) => !m.synced).length;
 
 // Warn-/Amber-Ton (Fälligkeit bald, offene Mängel) – ergänzt die Kernpalette.
-const kWarn = Color(0xFFB4791A);
+Color get kWarn => _pick(0xFFB4791A, 0xFFE0A94A); // Warnung / bald fällig
 
 // Stabile Farbzuordnung je Gewerk (Kategorien sind frei benennbar) – gleiche
 // Kategorie bekommt immer dieselbe Farbe (Summe der Zeichencodes → Palette).
@@ -697,97 +710,107 @@ class BauDocApp extends StatelessWidget {
   const BauDocApp({super.key});
   @override
   Widget build(BuildContext context) {
-    final base = ThemeData.light(useMaterial3: true);
-    return MaterialApp(
-      title: 'BauDoc',
-      debugShowCheckedModeBanner: false,
-      theme: base.copyWith(
-        scaffoldBackgroundColor: kBg,
-        colorScheme: base.colorScheme.copyWith(
-          primary: kAccent,
-          secondary: kAccent,
-          surface: kCard,
-          onSurface: kInk,
-          error: kRed,
-        ),
-        textTheme: base.textTheme.apply(
-            bodyColor: kInk, displayColor: kInk, fontFamilyFallback: const [
-          'Segoe UI',
-          'Roboto',
-          'Helvetica',
-          'Arial'
-        ]),
-        cardColor: kCard,
-        cardTheme: CardThemeData(
-          color: kCard,
-          elevation: 0,
-          margin: EdgeInsets.zero,
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: const BorderSide(color: kLine)),
-        ),
-        dividerTheme: const DividerThemeData(color: kLine, thickness: 1),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: kBg2,
-          foregroundColor: kInk,
-          elevation: 0,
-          scrolledUnderElevation: 0.5,
-          surfaceTintColor: Colors.transparent,
-          shadowColor: Color(0x14000000),
-          centerTitle: false,
-          titleTextStyle: TextStyle(
-              color: kInk,
-              fontSize: 19,
-              fontWeight: FontWeight.w700,
-              letterSpacing: -.2),
-        ),
-        elevatedButtonTheme: ElevatedButtonThemeData(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: kAccent,
-            foregroundColor: kAccentInk,
-            elevation: 0,
-            padding:
-                const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12)),
-            textStyle: const TextStyle(
-                fontWeight: FontWeight.w700, fontSize: 15),
+    return ValueListenableBuilder<bool>(
+      valueListenable: gDark,
+      builder: (context, dark, _) {
+        final base = ThemeData(
+          brightness: dark ? Brightness.dark : Brightness.light,
+          useMaterial3: true,
+        );
+        return MaterialApp(
+          title: 'BauDoc',
+          debugShowCheckedModeBanner: false,
+          theme: base.copyWith(
+            scaffoldBackgroundColor: kBg,
+            colorScheme: base.colorScheme.copyWith(
+              primary: kAccent,
+              secondary: kAccent,
+              surface: kCard,
+              onSurface: kInk,
+              error: kRed,
+            ),
+            textTheme: base.textTheme.apply(
+                bodyColor: kInk,
+                displayColor: kInk,
+                fontFamilyFallback: const [
+                  'Segoe UI',
+                  'Roboto',
+                  'Helvetica',
+                  'Arial'
+                ]),
+            cardColor: kCard,
+            cardTheme: CardThemeData(
+              color: kCard,
+              elevation: 0,
+              margin: EdgeInsets.zero,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  side: BorderSide(color: kLine)),
+            ),
+            dividerTheme: DividerThemeData(color: kLine, thickness: 1),
+            appBarTheme: AppBarTheme(
+              backgroundColor: kBg2,
+              foregroundColor: kInk,
+              elevation: 0,
+              scrolledUnderElevation: 0.5,
+              surfaceTintColor: Colors.transparent,
+              shadowColor: const Color(0x14000000),
+              centerTitle: false,
+              titleTextStyle: TextStyle(
+                  color: kInk,
+                  fontSize: 19,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -.2),
+            ),
+            elevatedButtonTheme: ElevatedButtonThemeData(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: kAccent,
+                foregroundColor: kAccentInk,
+                elevation: 0,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+                textStyle:
+                    const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+              ),
+            ),
+            floatingActionButtonTheme: FloatingActionButtonThemeData(
+              backgroundColor: kAccent,
+              foregroundColor: kAccentInk,
+              elevation: 2,
+            ),
+            chipTheme: base.chipTheme.copyWith(
+              backgroundColor: kCard2,
+              side: BorderSide(color: kLine),
+              labelStyle: TextStyle(color: kInk2, fontSize: 13),
+            ),
+            snackBarTheme: SnackBarThemeData(
+              backgroundColor: kInk,
+              contentTextStyle: const TextStyle(color: Colors.white),
+              behavior: SnackBarBehavior.floating,
+            ),
+            inputDecorationTheme: InputDecorationTheme(
+              filled: true,
+              fillColor: kCard2,
+              hintStyle: TextStyle(color: kMuted),
+              labelStyle: TextStyle(color: kMuted),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: kLine)),
+              enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: kLine)),
+              focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: kAccent, width: 1.6)),
+            ),
           ),
-        ),
-        floatingActionButtonTheme: const FloatingActionButtonThemeData(
-          backgroundColor: kAccent,
-          foregroundColor: kAccentInk,
-          elevation: 2,
-        ),
-        chipTheme: base.chipTheme.copyWith(
-          backgroundColor: kCard2,
-          side: const BorderSide(color: kLine),
-          labelStyle: const TextStyle(color: kInk2, fontSize: 13),
-        ),
-        snackBarTheme: const SnackBarThemeData(
-          backgroundColor: kInk,
-          contentTextStyle: TextStyle(color: Colors.white),
-          behavior: SnackBarBehavior.floating,
-        ),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: kCard2,
-          hintStyle: const TextStyle(color: kMuted),
-          labelStyle: const TextStyle(color: kMuted),
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-          border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: kLine)),
-          enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: kLine)),
-          focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: kAccent, width: 1.6)),
-        ),
-      ),
-      home: const RootGate(),
+          home: const RootGate(),
+        );
+      },
     );
   }
 }
@@ -855,8 +878,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               blurRadius: 18,
                               offset: const Offset(0, 8))
                         ]),
-                    child: const Icon(Icons.apartment,
-                        color: kAccentInk, size: 36),
+                    child: Icon(Icons.apartment, color: kAccentInk, size: 36),
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -867,7 +889,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         fontWeight: FontWeight.w800,
                         letterSpacing: -.5)),
                 const SizedBox(height: 4),
-                const Text('Baustellen- & Auftragsdokumentation',
+                Text('Baustellen- & Auftragsdokumentation',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: kMuted, fontSize: 14)),
                 const SizedBox(height: 24),
@@ -881,7 +903,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             style: TextStyle(
                                 fontSize: 16, fontWeight: FontWeight.w700)),
                         const SizedBox(height: 16),
-                        const Text('Benutzer',
+                        Text('Benutzer',
                             style: TextStyle(color: kMuted, fontSize: 13)),
                         const SizedBox(height: 6),
                         DropdownButtonFormField<String>(
@@ -897,7 +919,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           onChanged: (v) => setState(() => userId = v),
                         ),
                         const SizedBox(height: 12),
-                        const Text('PIN',
+                        Text('PIN',
                             style: TextStyle(color: kMuted, fontSize: 13)),
                         const SizedBox(height: 6),
                         TextField(
@@ -911,8 +933,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           Padding(
                             padding: const EdgeInsets.only(top: 10),
                             child: Text(error!,
-                                style:
-                                    const TextStyle(color: kRed, fontSize: 13)),
+                                style: TextStyle(color: kRed, fontSize: 13)),
                           ),
                         const SizedBox(height: 16),
                         SizedBox(
@@ -933,13 +954,13 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 const SizedBox(height: 18),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 12),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   decoration: BoxDecoration(
                       color: kCard2,
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: kLine)),
-                  child: const Column(
+                  child: Column(
                     children: [
                       Text('DEMO-ZUGÄNGE',
                           style: TextStyle(
@@ -947,7 +968,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               fontSize: 11,
                               fontWeight: FontWeight.w700,
                               letterSpacing: 1)),
-                      SizedBox(height: 6),
+                      const SizedBox(height: 6),
                       Text(
                         'Administrator · 0000    Bauleiter · 1111    Büro · 2222',
                         textAlign: TextAlign.center,
@@ -967,6 +988,18 @@ class _LoginScreenState extends State<LoginScreen> {
 }
 
 // ---------- Home / Aufträge ----------
+typedef _HomeData = ({
+  List<Project> list,
+  int openN,
+  int doneN,
+  int tabCount,
+  List<String> chipCats,
+  int Function(String) countFor,
+  int overdue,
+  int openDefects,
+  int dueWeek,
+});
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
   @override
@@ -988,29 +1021,45 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final s = Store.I;
+    final wide = MediaQuery.of(context).size.width >= 900;
     return Scaffold(
-      appBar: AppBar(
-        leading: Padding(
-          padding: const EdgeInsets.only(left: 10),
-          child: GestureDetector(
-            onTap: () => showProfileSheet(context),
-            child: Center(
-              child: CircleAvatar(
-                radius: 17,
-                backgroundColor: kAccent,
-                child: Text(initials(s.currentUser?.name ?? '?'),
-                    style: const TextStyle(
-                        color: kAccentInk,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 13)),
+      appBar: wide
+          ? null
+          : AppBar(
+              leading: Padding(
+                padding: const EdgeInsets.only(left: 10),
+                child: GestureDetector(
+                  onTap: () => showProfileSheet(context),
+                  child: Center(
+                    child: CircleAvatar(
+                      radius: 17,
+                      backgroundColor: kAccent,
+                      child: Text(initials(s.currentUser?.name ?? '?'),
+                          style: TextStyle(
+                              color: kAccentInk,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 13)),
+                    ),
+                  ),
+                ),
+              ),
+              title: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Aufträge',
+                      style:
+                          TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
+                  Text('Alle laufenden Baustellen',
+                      style: TextStyle(
+                          fontWeight: FontWeight.w400,
+                          fontSize: 11.5,
+                          color: kMuted,
+                          height: 1.1)),
+                ],
               ),
             ),
-          ),
-        ),
-        title: const Text('Aufträge',
-            style: TextStyle(fontWeight: FontWeight.w600)),
-      ),
-      floatingActionButton: Store.I.can('editProjects')
+      floatingActionButton: (!wide && Store.I.can('editProjects'))
           ? FloatingActionButton(
               backgroundColor: kAccent,
               foregroundColor: kAccentInk,
@@ -1066,6 +1115,18 @@ class _HomeScreenState extends State<HomeScreen> {
             return d != null && d >= 0 && d <= 7;
           }).length;
 
+          final data = (
+            list: list,
+            openN: openN,
+            doneN: doneN,
+            tabCount: tabProjects.length,
+            chipCats: chipCats,
+            countFor: countFor,
+            overdue: overdue,
+            openDefects: openDefects,
+            dueWeek: dueWeek,
+          );
+          if (wide) return _wideBody(context, data);
           return Column(
             children: [
               // Kennzahlen-Strip
@@ -1101,8 +1162,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   onChanged: (v) => setState(() => query = v),
                   decoration: InputDecoration(
                     isDense: true,
-                    prefixIcon:
-                        const Icon(Icons.search, size: 20, color: kMuted),
+                    prefixIcon: Icon(Icons.search, size: 20, color: kMuted),
                     hintText: 'Auftrag oder Kunde suchen …',
                     suffixIcon: query.isEmpty
                         ? null
@@ -1127,8 +1187,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         () => setState(() => filter = null),
                         count: tabProjects.length),
                     for (final t in chipCats)
-                      _chip(t, filter == t,
-                          () => setState(() => filter = t),
+                      _chip(t, filter == t, () => setState(() => filter = t),
                           count: countFor(t), swatch: tradeColor(t)),
                   ],
                 ),
@@ -1141,100 +1200,97 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _tabBtn(String label, int count, String value) {
+  Widget _tabBtn(String label, int count, String value, {bool expand = true}) {
     final on = tab == value;
-    return Expanded(
-      child: GestureDetector(
-        onTap: () => setState(() => tab = value),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          padding: const EdgeInsets.symmetric(vertical: 9),
-          decoration: BoxDecoration(
-            color: on ? kCard : Colors.transparent,
-            borderRadius: BorderRadius.circular(9),
-            boxShadow: on
-                ? [
-                    BoxShadow(
-                        color: kInk.withValues(alpha: .07),
-                        blurRadius: 5,
-                        offset: const Offset(0, 1))
-                  ]
-                : null,
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(label,
+    final btn = GestureDetector(
+      onTap: () => setState(() => tab = value),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: EdgeInsets.symmetric(vertical: 9, horizontal: expand ? 0 : 16),
+        decoration: BoxDecoration(
+          color: on ? kCard : Colors.transparent,
+          borderRadius: BorderRadius.circular(9),
+          boxShadow: on
+              ? [
+                  BoxShadow(
+                      color: kInk.withValues(alpha: .07),
+                      blurRadius: 5,
+                      offset: const Offset(0, 1))
+                ]
+              : null,
+        ),
+        child: Row(
+          mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(label,
+                style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                    color: on ? kInk : kMuted)),
+            const SizedBox(width: 7),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
+              decoration: BoxDecoration(
+                color: (on ? kAccent : kMuted).withValues(alpha: .15),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text('$count',
                   style: TextStyle(
                       fontWeight: FontWeight.w700,
-                      fontSize: 13,
-                      color: on ? kInk : kMuted)),
-              const SizedBox(width: 7),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
-                decoration: BoxDecoration(
-                  color: (on ? kAccent : kMuted).withValues(alpha: .15),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text('$count',
-                    style: TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 11.5,
-                        color: on ? kAccent : kMuted)),
-              ),
-            ],
-          ),
+                      fontSize: 11.5,
+                      color: on ? kAccent : kMuted)),
+            ),
+          ],
         ),
       ),
     );
+    return expand ? Expanded(child: btn) : btn;
   }
 
   Widget _chip(String label, bool on, VoidCallback onTap,
-      {int? count, Color? swatch}) {
+      {int? count, Color? swatch, bool noPad = false}) {
     final c = on ? kAccent : kInk2;
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          alignment: Alignment.center,
-          padding: const EdgeInsets.symmetric(horizontal: 13),
-          decoration: BoxDecoration(
-            color: on ? kAccent.withValues(alpha: .13) : kCard,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-                color: on ? kAccent.withValues(alpha: .55) : kLine),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              if (swatch != null) ...[
-                Container(
-                    width: 8,
-                    height: 8,
-                    decoration:
-                        BoxDecoration(color: swatch, shape: BoxShape.circle)),
-                const SizedBox(width: 7),
-              ],
-              Text(label,
-                  style: TextStyle(
-                      color: c,
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w600)),
-              if (count != null) ...[
-                const SizedBox(width: 6),
-                Text('$count',
-                    style: TextStyle(
-                        color: c.withValues(alpha: .7),
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w700)),
-              ],
+    final chip = GestureDetector(
+      onTap: onTap,
+      child: Container(
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 13),
+        decoration: BoxDecoration(
+          color: on ? kAccent.withValues(alpha: .13) : kCard,
+          borderRadius: BorderRadius.circular(10),
+          border:
+              Border.all(color: on ? kAccent.withValues(alpha: .55) : kLine),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (swatch != null) ...[
+              Container(
+                  width: 8,
+                  height: 8,
+                  decoration:
+                      BoxDecoration(color: swatch, shape: BoxShape.circle)),
+              const SizedBox(width: 7),
             ],
-          ),
+            Text(label,
+                style: TextStyle(
+                    color: c, fontSize: 12.5, fontWeight: FontWeight.w600)),
+            if (count != null) ...[
+              const SizedBox(width: 6),
+              Text('$count',
+                  style: TextStyle(
+                      color: c.withValues(alpha: .7),
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700)),
+            ],
+          ],
         ),
       ),
     );
+    return noPad
+        ? chip
+        : Padding(padding: const EdgeInsets.only(right: 8), child: chip);
   }
 
   Widget _buildList(List<Project> list) {
@@ -1257,14 +1313,12 @@ class _HomeScreenState extends State<HomeScreen> {
                     color: kCard2,
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(color: kLine)),
-                child: const Icon(Icons.apartment_outlined,
-                    color: kMuted, size: 30),
+                child: Icon(Icons.apartment_outlined, color: kMuted, size: 30),
               ),
               const SizedBox(height: 16),
               Text(msg,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      color: kMuted, fontSize: 14, height: 1.5)),
+                  style: TextStyle(color: kMuted, fontSize: 14, height: 1.5)),
             ],
           ),
         ),
@@ -1276,6 +1330,431 @@ class _HomeScreenState extends State<HomeScreen> {
       itemCount: list.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (_, i) => _jobCard(list[i]),
+    );
+  }
+
+  // ===== Breite / Desktop-Ansicht (Layout wie Mockup) =====
+  Widget _wideBody(BuildContext context, _HomeData d) {
+    return Column(
+      children: [
+        _topBar(context, d),
+        Expanded(
+          child: SingleChildScrollView(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 1140),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 24, 24, 64),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _pageHeader(context),
+                      const SizedBox(height: 20),
+                      _statCards(d),
+                      const SizedBox(height: 22),
+                      _wideToolbar(d),
+                      const SizedBox(height: 16),
+                      if (d.list.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 40),
+                          child: _emptyState(),
+                        )
+                      else
+                        for (final p in d.list)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: _jobCard(p),
+                          ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _topBar(BuildContext context, _HomeData d) {
+    final u = Store.I.currentUser;
+    return Container(
+      decoration: BoxDecoration(
+        color: kBg2,
+        border: Border(bottom: BorderSide(color: kLine)),
+      ),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1140),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 11),
+            child: Row(
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [kAccent, const Color(0xFF0B646C)],
+                    ),
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                  child: Icon(Icons.apartment, size: 18, color: kAccentInk),
+                ),
+                const SizedBox(width: 10),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('BauDoc',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 15,
+                            letterSpacing: -.2)),
+                    Text('Baustellendoku',
+                        style: TextStyle(
+                            fontSize: 10.5, color: kMuted, height: 1)),
+                  ],
+                ),
+                const SizedBox(width: 22),
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 420),
+                      child: _topSearch(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 14),
+                PopupMenuButton<String?>(
+                  tooltip: 'Nach Gewerk filtern',
+                  position: PopupMenuPosition.under,
+                  onSelected: (v) => setState(() => filter = v),
+                  itemBuilder: (_) => <PopupMenuEntry<String?>>[
+                    const PopupMenuItem<String?>(
+                        value: null, child: Text('Alle Gewerke')),
+                    for (final t in d.chipCats)
+                      PopupMenuItem<String?>(value: t, child: Text(t)),
+                  ],
+                  child: _iconBox(Icons.tune),
+                ),
+                const SizedBox(width: 8),
+                InkWell(
+                  borderRadius: BorderRadius.circular(11),
+                  onTap: () => showProfileSheet(context),
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(4, 4, 8, 4),
+                    decoration: BoxDecoration(
+                      color: kCard2,
+                      borderRadius: BorderRadius.circular(11),
+                      border: Border.all(color: kLine),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 32,
+                          height: 32,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: kAccent,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(initials(u?.name ?? '?'),
+                              style: TextStyle(
+                                  color: kAccentInk,
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 13)),
+                        ),
+                        const SizedBox(width: 9),
+                        Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(u?.name ?? 'Konto',
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w600, fontSize: 13)),
+                            Text(u?.role ?? '',
+                                style: TextStyle(
+                                    fontSize: 11, color: kMuted, height: 1)),
+                          ],
+                        ),
+                        const SizedBox(width: 6),
+                        Icon(Icons.keyboard_arrow_down,
+                            size: 18, color: kMuted),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _topSearch() => SizedBox(
+        height: 38,
+        child: TextField(
+          controller: _search,
+          onChanged: (v) => setState(() => query = v),
+          style: const TextStyle(fontSize: 13.5),
+          decoration: InputDecoration(
+            isDense: true,
+            filled: true,
+            fillColor: kCard2,
+            contentPadding:
+                const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
+            prefixIcon: Icon(Icons.search, size: 18, color: kMuted),
+            hintText: 'Aufträge, Kunden, Adressen durchsuchen …',
+            hintStyle: TextStyle(fontSize: 13, color: kMuted),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide(color: kLine),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide(color: kAccent, width: 1.4),
+            ),
+            suffixIcon: query.isEmpty
+                ? null
+                : IconButton(
+                    icon: const Icon(Icons.close, size: 16),
+                    onPressed: () {
+                      _search.clear();
+                      setState(() => query = '');
+                    },
+                  ),
+          ),
+        ),
+      );
+
+  Widget _iconBox(IconData ic) => Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: kCard2,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: kLine),
+        ),
+        child: Icon(ic, size: 18, color: kInk2),
+      );
+
+  Widget _pageHeader(BuildContext context) => Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Aufträge',
+                    style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 22,
+                        letterSpacing: -.5)),
+                const SizedBox(height: 3),
+                Text('Übersicht aller laufenden Baustellen und Projekte',
+                    style: TextStyle(fontSize: 13.5, color: kInk2)),
+              ],
+            ),
+          ),
+          if (Store.I.can('editProjects'))
+            _primaryBtn(
+                'Neuer Auftrag', Icons.add, () => showProjectForm(context)),
+        ],
+      );
+
+  Widget _primaryBtn(String label, IconData ic, VoidCallback onTap) => Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: onTap,
+          child: Container(
+            height: 40,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [kAccent, const Color(0xFF0B646C)],
+              ),
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: [
+                BoxShadow(
+                    color: kAccent.withValues(alpha: .25),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2)),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(ic, size: 18, color: kAccentInk),
+                const SizedBox(width: 8),
+                Text(label,
+                    style: TextStyle(
+                        color: kAccentInk,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13.5)),
+              ],
+            ),
+          ),
+        ),
+      );
+
+  // IntrinsicHeight ist nötig, weil die Karten via CrossAxisAlignment.stretch
+  // gleich hoch sein sollen, der Strip aber in einem SingleChildScrollView
+  // sitzt – dort ist die Höhe unbegrenzt und "stretch" allein würde eine
+  // unendliche Höhe erzwingen.
+  Widget _statCards(_HomeData d) => IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+                child: _statCard(Icons.apartment, '${d.openN}', 'Aktiv',
+                    'Aufträge in Bearbeitung', kAccent)),
+            const SizedBox(width: 12),
+            Expanded(
+                child: _statCard(
+                    Icons.error_outline,
+                    '${d.overdue}',
+                    'Überfällig',
+                    d.overdue > 0 ? 'Sofort handeln' : 'Alles im Plan',
+                    kRed,
+                    tint: d.overdue > 0)),
+            const SizedBox(width: 12),
+            Expanded(
+                child: _statCard(
+                    Icons.warning_amber_rounded,
+                    '${d.openDefects}',
+                    'Offene Mängel',
+                    d.openDefects > 0 ? 'Zu beheben' : 'Keine offen',
+                    kWarn,
+                    tint: d.openDefects > 0)),
+            const SizedBox(width: 12),
+            Expanded(
+                child: _statCard(Icons.event, '${d.dueWeek}', 'Diese Woche',
+                    'fällig bis Sonntag', kBlue)),
+          ],
+        ),
+      );
+
+  Widget _statCard(IconData ic, String value, String label, String sub, Color c,
+          {bool tint = false}) =>
+      Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(label.toUpperCase(),
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: .4,
+                            color: kMuted)),
+                  ),
+                  Container(
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                        color: c.withValues(alpha: .13),
+                        borderRadius: BorderRadius.circular(9)),
+                    child: Icon(ic, size: 16, color: c),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(value,
+                  style: TextStyle(
+                      fontSize: 26,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -.5,
+                      height: 1,
+                      color: tint ? c : kInk)),
+              const SizedBox(height: 5),
+              Text(sub,
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: tint ? c : kInk2,
+                      fontWeight: tint ? FontWeight.w600 : FontWeight.w400)),
+            ],
+          ),
+        ),
+      );
+
+  Widget _wideToolbar(_HomeData d) => Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(3),
+            decoration: BoxDecoration(
+              color: kCard2,
+              borderRadius: BorderRadius.circular(11),
+              border: Border.all(color: kLine),
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              _tabBtn('Offen', d.openN, 'offen', expand: false),
+              _tabBtn('Abgeschlossen', d.doneN, 'done', expand: false),
+            ]),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Wrap(
+              alignment: WrapAlignment.end,
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _chip(
+                    'Alle', filter == null, () => setState(() => filter = null),
+                    count: d.tabCount, noPad: true),
+                for (final t in d.chipCats)
+                  _chip(t, filter == t, () => setState(() => filter = t),
+                      count: d.countFor(t), swatch: tradeColor(t), noPad: true),
+              ],
+            ),
+          ),
+        ],
+      );
+
+  String _ref(Project p) => '#${1000 + p.id.hashCode.abs() % 9000}';
+
+  Widget _emptyState() {
+    final msg = filter != null
+        ? 'Keine „$filter"-Aufträge unter ${tab == 'offen' ? 'Offen' : 'Abgeschlossen'}.'
+        : (tab == 'offen'
+            ? 'Es sind keine offenen Aufträge vorhanden.\nMit „Neuer Auftrag" legen Sie einen neuen an.'
+            : 'Es liegen noch keine abgeschlossenen Aufträge vor.');
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(30),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 64,
+              height: 64,
+              decoration: BoxDecoration(
+                  color: kCard2,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: kLine)),
+              child: Icon(Icons.apartment_outlined, color: kMuted, size: 30),
+            ),
+            const SizedBox(height: 16),
+            Text(msg,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: kMuted, fontSize: 14, height: 1.5)),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1301,8 +1780,13 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               // Kopf: Gewerk-Badge + Fälligkeit
               Row(children: [
-                if (p.type.isNotEmpty)
-                  Flexible(child: _tradeBadge(p.type, tc)),
+                if (p.type.isNotEmpty) Flexible(child: _tradeBadge(p.type, tc)),
+                const SizedBox(width: 8),
+                Text(_ref(p),
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: kMuted,
+                        fontWeight: FontWeight.w600)),
                 const Spacer(),
                 _duePill(p),
               ]),
@@ -1332,7 +1816,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
               const SizedBox(height: 12),
-              const Divider(height: 1, color: kLine),
+              Divider(height: 1, color: kLine),
               const SizedBox(height: 11),
               // Fuß: Fortschritt + Mängel + Stunden + Material
               Wrap(
@@ -1407,7 +1891,7 @@ class _HomeScreenState extends State<HomeScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
           color: subtle ? kCard2 : c.withValues(alpha: .13),
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(8),
           border: subtle ? Border.all(color: kLine) : null,
         ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -1429,13 +1913,13 @@ class _HomeScreenState extends State<HomeScreen> {
     ].join('  ·  ');
     if (txt.isEmpty) return const SizedBox.shrink();
     return Row(children: [
-      const Icon(Icons.place_outlined, size: 13, color: kMuted),
+      Icon(Icons.place_outlined, size: 13, color: kMuted),
       const SizedBox(width: 4),
       Expanded(
         child: Text(txt,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: kMuted, fontSize: 12.5)),
+            style: TextStyle(color: kMuted, fontSize: 12.5)),
       ),
     ]);
   }
@@ -1457,7 +1941,7 @@ class _HomeScreenState extends State<HomeScreen> {
           borderRadius: BorderRadius.circular(9),
           border: Border.all(color: kLine),
         ),
-        child: const Icon(Icons.chevron_right, size: 19, color: kInk2),
+        child: Icon(Icons.chevron_right, size: 19, color: kInk2),
       ),
     ]);
   }
@@ -1483,7 +1967,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       const SizedBox(width: 9),
       Text('$done/$total Aufgaben',
-          style: const TextStyle(
+          style: TextStyle(
               color: kInk2, fontSize: 12.5, fontWeight: FontWeight.w600)),
     ]);
   }
@@ -1513,10 +1997,12 @@ class _HomeScreenState extends State<HomeScreen> {
           _statTile(Icons.apartment, '$active', 'Aktiv', kAccent),
           _statDiv(),
           _statTile(Icons.error_outline, '$overdue', 'Überfällig',
-              overdue > 0 ? kRed : kMuted),
+              overdue > 0 ? kRed : kMuted,
+              tintValue: overdue > 0),
           _statDiv(),
           _statTile(Icons.warning_amber_rounded, '$defects', 'Mängel',
-              defects > 0 ? kWarn : kMuted),
+              defects > 0 ? kWarn : kMuted,
+              tintValue: defects > 0),
           _statDiv(),
           _statTile(Icons.event, '$dueWeek', 'Diese Woche', kInk2),
         ]),
@@ -1526,7 +2012,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _statDiv() => Container(width: 1, height: 40, color: kLine);
 
-  Widget _statTile(IconData ic, String value, String label, Color c) =>
+  Widget _statTile(IconData ic, String value, String label, Color c,
+          {bool tintValue = false}) =>
       Expanded(
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
@@ -1539,20 +2026,23 @@ class _HomeScreenState extends State<HomeScreen> {
                   borderRadius: BorderRadius.circular(9)),
               child: Icon(ic, size: 16, color: c),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 7),
             Text(value,
-                style: const TextStyle(
-                    fontSize: 17,
+                style: TextStyle(
+                    fontSize: 18,
                     fontWeight: FontWeight.w800,
-                    letterSpacing: -.5)),
-            Text(label,
+                    letterSpacing: -.5,
+                    color: tintValue ? c : kInk)),
+            const SizedBox(height: 1),
+            Text(label.toUpperCase(),
                 textAlign: TextAlign.center,
                 maxLines: 2,
-                style: const TextStyle(
-                    fontSize: 10.5,
+                style: TextStyle(
+                    fontSize: 9.5,
                     color: kMuted,
                     height: 1.15,
-                    fontWeight: FontWeight.w500)),
+                    letterSpacing: .4,
+                    fontWeight: FontWeight.w700)),
           ]),
         ),
       );
@@ -1616,7 +2106,7 @@ class ProjectScreen extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8, left: 4),
                   child: Text(p.type,
-                      style: const TextStyle(
+                      style: TextStyle(
                           color: kMuted,
                           fontWeight: FontWeight.w700,
                           letterSpacing: .6)),
@@ -1663,7 +2153,7 @@ class ProjectScreen extends StatelessWidget {
                           context,
                           MaterialPageRoute(
                               builder: (_) => HoursScreen(projectId: p.id)))),
-                  const Divider(height: 1, color: kLine),
+                  Divider(height: 1, color: kLine),
                   _navTile(
                       context,
                       Icons.inventory_2_outlined,
@@ -1675,7 +2165,7 @@ class ProjectScreen extends StatelessWidget {
                           MaterialPageRoute(
                               builder: (_) =>
                                   MaterialsScreen(projectId: p.id)))),
-                  const Divider(height: 1, color: kLine),
+                  Divider(height: 1, color: kLine),
                   _navTile(
                       context,
                       Icons.check_circle_outline,
@@ -1686,7 +2176,7 @@ class ProjectScreen extends StatelessWidget {
                           context,
                           MaterialPageRoute(
                               builder: (_) => TasksScreen(projectId: p.id)))),
-                  const Divider(height: 1, color: kLine),
+                  Divider(height: 1, color: kLine),
                   _navTile(
                       context,
                       Icons.report_problem_outlined,
@@ -1715,8 +2205,8 @@ class ProjectScreen extends StatelessWidget {
                 ),
               ]),
               if (p.notes.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.only(left: 4, bottom: 4),
+                Padding(
+                  padding: const EdgeInsets.only(left: 4, bottom: 4),
                   child: Text('Noch keine Einträge.',
                       style: TextStyle(color: kMuted)),
                 )
@@ -1735,17 +2225,16 @@ class ProjectScreen extends StatelessWidget {
                                     .where((x) => x.isNotEmpty)
                                     .join(', ')
                             ].join(' · '),
-                            style: const TextStyle(color: kMuted)),
+                            style: TextStyle(color: kMuted)),
                         trailing: IconButton(
-                          icon:
-                              const Icon(Icons.delete_outline, color: kMuted),
+                          icon: Icon(Icons.delete_outline, color: kMuted),
                           onPressed: () {
                             p.notes.removeAt(i);
                             Store.I.save();
                           },
                         ),
                       ),
-                      if (i > 0) const Divider(height: 1, color: kLine),
+                      if (i > 0) Divider(height: 1, color: kLine),
                     ],
                   ]),
                 ),
@@ -1795,7 +2284,7 @@ class ProjectScreen extends StatelessWidget {
                   style: TextStyle(
                       fontSize: 18, fontWeight: FontWeight.w800, color: c)),
               const SizedBox(height: 4),
-              Text(lbl, style: const TextStyle(fontSize: 10.5, color: kMuted)),
+              Text(lbl, style: TextStyle(fontSize: 10.5, color: kMuted)),
             ]),
           ),
         ),
@@ -1814,8 +2303,8 @@ class ProjectScreen extends StatelessWidget {
           child: Icon(ic, color: col, size: 22),
         ),
         title: Text(t),
-        subtitle: Text(s, style: const TextStyle(color: kMuted)),
-        trailing: const Icon(Icons.chevron_right, color: kMuted),
+        subtitle: Text(s, style: TextStyle(color: kMuted)),
+        trailing: Icon(Icons.chevron_right, color: kMuted),
       );
 
   Widget _infoChip(IconData ic, String text, Color c) => Container(
@@ -1879,11 +2368,11 @@ class ProjectScreen extends StatelessWidget {
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: kLine),
                 ),
-                child: const Column(
+                child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(Icons.add_a_photo_outlined, color: kAccent),
-                    SizedBox(height: 4),
+                    const SizedBox(height: 4),
                     Text('Foto', style: TextStyle(color: kMuted, fontSize: 11)),
                   ],
                 ),
@@ -1929,7 +2418,7 @@ class HoursScreen extends StatelessWidget {
             child: const Icon(Icons.add),
           ),
           body: p.hours.isEmpty
-              ? const Center(
+              ? Center(
                   child: Text('Noch keine Stunden erfasst.',
                       style: TextStyle(color: kMuted)))
               : ListView(
@@ -1943,9 +2432,9 @@ class HoursScreen extends StatelessWidget {
                                   title: Text('${h.worker} · ${h.h} h'),
                                   subtitle: Text(
                                       '${dShort(h.date)} · ${h.task.isEmpty ? '—' : h.task}',
-                                      style: const TextStyle(color: kMuted)),
+                                      style: TextStyle(color: kMuted)),
                                   trailing: IconButton(
-                                    icon: const Icon(Icons.delete_outline,
+                                    icon: Icon(Icons.delete_outline,
                                         color: kMuted),
                                     onPressed: () {
                                       p.hours.removeWhere((x) => x.id == h.id);
@@ -1992,7 +2481,7 @@ class MaterialsScreen extends StatelessWidget {
             child: const Icon(Icons.add),
           ),
           body: p.materials.isEmpty
-              ? const Center(
+              ? Center(
                   child: Text('Noch kein Material erfasst.',
                       style: TextStyle(color: kMuted)))
               : ListView(
@@ -2006,7 +2495,7 @@ class MaterialsScreen extends StatelessWidget {
                                   title: Text(m.name),
                                   subtitle: Text(
                                       '${m.qty} ${m.unit} × ${eur(m.price)} · ${dShort(m.date)}',
-                                      style: const TextStyle(color: kMuted)),
+                                      style: TextStyle(color: kMuted)),
                                   trailing: Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
@@ -2014,7 +2503,7 @@ class MaterialsScreen extends StatelessWidget {
                                             style: const TextStyle(
                                                 fontWeight: FontWeight.w700)),
                                         IconButton(
-                                          icon: const Icon(Icons.delete_outline,
+                                          icon: Icon(Icons.delete_outline,
                                               color: kMuted),
                                           onPressed: () {
                                             p.materials.removeWhere(
@@ -2062,7 +2551,7 @@ class TasksScreen extends StatelessWidget {
             child: const Icon(Icons.add),
           ),
           body: p.tasks.isEmpty
-              ? const Center(
+              ? Center(
                   child: Text('Noch keine Aufgaben.',
                       style: TextStyle(color: kMuted)))
               : ListView(
@@ -2093,10 +2582,9 @@ class TasksScreen extends StatelessWidget {
                                   subtitle: t.due.isEmpty
                                       ? null
                                       : Text('fällig ${dShort(t.due)}',
-                                          style:
-                                              const TextStyle(color: kMuted)),
+                                          style: TextStyle(color: kMuted)),
                                   trailing: IconButton(
-                                    icon: const Icon(Icons.delete_outline,
+                                    icon: Icon(Icons.delete_outline,
                                         color: kMuted),
                                     onPressed: () {
                                       p.tasks.removeWhere((x) => x.id == t.id);
@@ -2135,7 +2623,7 @@ class DefectsScreen extends StatelessWidget {
             child: const Icon(Icons.add),
           ),
           body: p.defects.isEmpty
-              ? const Center(
+              ? Center(
                   child: Text('Keine Mängel erfasst.',
                       style: TextStyle(color: kMuted)))
               : ListView(
@@ -2166,11 +2654,10 @@ class DefectsScreen extends StatelessWidget {
                                   subtitle: d.description.isEmpty
                                       ? null
                                       : Text(d.description,
-                                          style:
-                                              const TextStyle(color: kMuted)),
+                                          style: TextStyle(color: kMuted)),
                                   onTap: () => showDefectForm(context, p, d),
                                   trailing: IconButton(
-                                    icon: const Icon(Icons.delete_outline,
+                                    icon: Icon(Icons.delete_outline,
                                         color: kMuted),
                                     onPressed: () {
                                       p.defects
@@ -2213,8 +2700,8 @@ class AdminScreen extends StatelessWidget {
               leading: Icon(icon, color: color),
               title: Text(title,
                   style: const TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: Text(subtitle, style: const TextStyle(color: kMuted)),
-              trailing: const Icon(Icons.chevron_right, color: kMuted),
+              subtitle: Text(subtitle, style: TextStyle(color: kMuted)),
+              trailing: Icon(Icons.chevron_right, color: kMuted),
               onTap: () => Navigator.of(context).push(MaterialPageRoute(
                   builder: (_) =>
                       _AdminSectionScreen(sectionKey: key, title: title))),
@@ -2283,12 +2770,12 @@ class _AdminSectionScreen extends StatelessWidget {
               children: s.catalog
                   .map((c) => ListTile(
                         onTap: () => showCatalogForm(context, c),
-                        leading: const Icon(Icons.euro, color: kViolet),
+                        leading: Icon(Icons.euro, color: kViolet),
                         title: Text(c.name),
                         subtitle: Text('${eur(c.price)} / ${c.unit}',
-                            style: const TextStyle(color: kMuted)),
+                            style: TextStyle(color: kMuted)),
                         trailing: IconButton(
-                          icon: const Icon(Icons.delete_outline, color: kMuted),
+                          icon: Icon(Icons.delete_outline, color: kMuted),
                           onPressed: () {
                             s.catalog.removeWhere((x) => x.id == c.id);
                             s.save();
@@ -2298,7 +2785,8 @@ class _AdminSectionScreen extends StatelessWidget {
                   .toList(),
             ),
           ),
-          _adminAddBtn('Preis hinzufügen', () => showCatalogForm(context, null)),
+          _adminAddBtn(
+              'Preis hinzufügen', () => showCatalogForm(context, null)),
         ];
       case 'pauschalen':
         return [
@@ -2308,13 +2796,13 @@ class _AdminSectionScreen extends StatelessWidget {
               children: s.pauschalen
                   .map((pa) => ListTile(
                         onTap: () => showPauschaleForm(context, pa),
-                        leading: const Icon(Icons.receipt_long_outlined,
-                            color: kViolet),
+                        leading:
+                            Icon(Icons.receipt_long_outlined, color: kViolet),
                         title: Text(pa.name),
                         subtitle: Text(eur(pa.amount),
-                            style: const TextStyle(color: kMuted)),
+                            style: TextStyle(color: kMuted)),
                         trailing: IconButton(
-                          icon: const Icon(Icons.delete_outline, color: kMuted),
+                          icon: Icon(Icons.delete_outline, color: kMuted),
                           onPressed: () {
                             s.pauschalen.removeWhere((x) => x.id == pa.id);
                             s.save();
@@ -2336,15 +2824,15 @@ class _AdminSectionScreen extends StatelessWidget {
                 final used = s.projects.where((p) => p.type == a).length;
                 return ListTile(
                   onTap: () => showCategoryForm(context, a),
-                  leading: const Icon(Icons.category_outlined, color: kBlue),
+                  leading: Icon(Icons.category_outlined, color: kBlue),
                   title: Text(a),
                   subtitle: Text(
                       used == 0
                           ? 'Nicht verwendet'
                           : '$used Auftrag${used == 1 ? '' : 'e'}',
-                      style: const TextStyle(color: kMuted)),
+                      style: TextStyle(color: kMuted)),
                   trailing: IconButton(
-                    icon: const Icon(Icons.delete_outline, color: kMuted),
+                    icon: Icon(Icons.delete_outline, color: kMuted),
                     onPressed: () => _delCategory(context, a),
                   ),
                 );
@@ -2362,15 +2850,14 @@ class _AdminSectionScreen extends StatelessWidget {
               children: s.users
                   .map((u) => ListTile(
                         onTap: () => showUserForm(context, u),
-                        leading:
-                            const Icon(Icons.person_outline, color: kAccent),
+                        leading: Icon(Icons.person_outline, color: kAccent),
                         title: Text(
                             '${u.name}${u.id == s.sessionId ? '  (du)' : ''}'),
                         subtitle: Text(
                             '${u.role}${u.wage > 0 ? ' · ${eur(u.wage)}/h' : ''} · PIN ${u.pin}',
-                            style: const TextStyle(color: kMuted)),
+                            style: TextStyle(color: kMuted)),
                         trailing: IconButton(
-                          icon: const Icon(Icons.delete_outline, color: kMuted),
+                          icon: Icon(Icons.delete_outline, color: kMuted),
                           onPressed: () => _delUser(context, u),
                         ),
                       ))
@@ -2383,16 +2870,15 @@ class _AdminSectionScreen extends StatelessWidget {
           Card(
             margin: EdgeInsets.zero,
             child: ListTile(
-              leading: const Icon(Icons.shield_outlined, color: kBlue),
+              leading: Icon(Icons.shield_outlined, color: kBlue),
               title: const Text('Rollen & Berechtigungen',
                   style: TextStyle(fontWeight: FontWeight.w600)),
               subtitle: Text('${s.roles.length} Rollen',
-                  style: const TextStyle(color: kMuted)),
-              trailing: const Icon(Icons.chevron_right, color: kMuted),
+                  style: TextStyle(color: kMuted)),
+              trailing: Icon(Icons.chevron_right, color: kMuted),
               onTap: () => Navigator.of(context).push(MaterialPageRoute(
                   builder: (_) => const _AdminSectionScreen(
-                      sectionKey: 'roles',
-                      title: 'Rollen & Berechtigungen'))),
+                      sectionKey: 'roles', title: 'Rollen & Berechtigungen'))),
             ),
           ),
         ];
@@ -2413,11 +2899,11 @@ class _AdminSectionScreen extends StatelessWidget {
                   title: Text(r),
                   subtitle: Text(
                       '${admin ? 'alle' : '$n'} Rechte · $count Benutzer',
-                      style: const TextStyle(color: kMuted)),
+                      style: TextStyle(color: kMuted)),
                   trailing: admin
-                      ? const Icon(Icons.lock_outline, color: kMuted, size: 20)
+                      ? Icon(Icons.lock_outline, color: kMuted, size: 20)
                       : IconButton(
-                          icon: const Icon(Icons.delete_outline, color: kMuted),
+                          icon: Icon(Icons.delete_outline, color: kMuted),
                           onPressed: () => _delRole(context, r),
                         ),
                 );
@@ -2502,7 +2988,7 @@ class _SectionTitle extends StatelessWidget {
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.fromLTRB(4, 6, 4, 9),
         child: Text(text.toUpperCase(),
-            style: const TextStyle(
+            style: TextStyle(
                 color: kMuted,
                 fontWeight: FontWeight.w700,
                 fontSize: 12,
@@ -2525,7 +3011,7 @@ Future<bool> confirm(BuildContext context, String msg) async {
                 child: const Text('Abbrechen')),
             TextButton(
                 onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('OK', style: TextStyle(color: kRed))),
+                child: Text('OK', style: TextStyle(color: kRed))),
           ],
         ),
       ) ??
@@ -2559,8 +3045,7 @@ Future<T?> _sheet<T>(
               height: 4,
               margin: const EdgeInsets.only(bottom: 14),
               decoration: BoxDecoration(
-                  color: kLine,
-                  borderRadius: BorderRadius.circular(4)),
+                  color: kLine, borderRadius: BorderRadius.circular(4)),
             ),
           ),
           Flexible(child: builder(ctx)),
@@ -2573,7 +3058,7 @@ Future<T?> _sheet<T>(
 Widget _label(String t) => Padding(
       padding: const EdgeInsets.only(top: 12, bottom: 6, left: 2),
       child: Text(t,
-          style: const TextStyle(
+          style: TextStyle(
               color: kMuted, fontSize: 13, fontWeight: FontWeight.w600)),
     );
 
@@ -2588,7 +3073,7 @@ Widget _pickField(String hint, String value, VoidCallback onTap) =>
           border: Border.all(color: kLine),
         ),
         child: Row(children: [
-          const Icon(Icons.event, size: 18, color: kMuted),
+          Icon(Icons.event, size: 18, color: kMuted),
           const SizedBox(width: 8),
           Text(value.isEmpty ? hint : dLong(value),
               style: TextStyle(color: value.isEmpty ? kMuted : kInk)),
@@ -2632,7 +3117,7 @@ Future<void> exportProjectPdf(BuildContext context, Project p) async {
           const Text('PDF exportieren',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
-          const Text(
+          Text(
               'Leistungsnachweis / Rechnung. Löhne werden je Mitarbeiter '
               'automatisch berechnet.',
               style: TextStyle(color: kMuted, fontSize: 13)),
@@ -2697,7 +3182,7 @@ Future<void> exportProjectQuote(BuildContext context, Project p) async {
           const Text('Angebot exportieren',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
-          const Text(
+          Text(
               'Angebot / Kostenvoranschlag: Material aus dem Auftrag plus '
               'geschätzte Arbeit, mit MwSt-Ausweis.',
               style: TextStyle(color: kMuted, fontSize: 13)),
@@ -2711,8 +3196,7 @@ Future<void> exportProjectQuote(BuildContext context, Project p) async {
                         controller: hoursC,
                         keyboardType: const TextInputType.numberWithOptions(
                             decimal: true),
-                        decoration:
-                            const InputDecoration(hintText: 'z. B. 8')),
+                        decoration: const InputDecoration(hintText: 'z. B. 8')),
                   ]),
             ),
             const SizedBox(width: 10),
@@ -2740,8 +3224,8 @@ Future<void> exportProjectQuote(BuildContext context, Project p) async {
                         controller: vatC,
                         keyboardType: const TextInputType.numberWithOptions(
                             decimal: true),
-                        decoration: const InputDecoration(
-                            hintText: '19 – 0 = ohne')),
+                        decoration:
+                            const InputDecoration(hintText: '19 – 0 = ohne')),
                   ]),
             ),
             const SizedBox(width: 10),
@@ -2897,8 +3381,10 @@ Future<void> exportProjectsCsv(BuildContext context) async {
 
       final vis = visible();
       final selCount = vis.where((p) => selected.contains(p.id)).length;
-      final hasFilter =
-          gewerk != null || statusF != 'alle' || von.isNotEmpty || bis.isNotEmpty;
+      final hasFilter = gewerk != null ||
+          statusF != 'alle' ||
+          von.isNotEmpty ||
+          bis.isNotEmpty;
 
       InputDecoration dense(String label) => InputDecoration(
             labelText: label,
@@ -2915,7 +3401,7 @@ Future<void> exportProjectsCsv(BuildContext context) async {
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
           Text('$selCount von ${vis.length} ausgewählt',
-              style: const TextStyle(color: kMuted, fontSize: 13)),
+              style: TextStyle(color: kMuted, fontSize: 13)),
           const SizedBox(height: 12),
           // ---- Filter ----
           Row(children: [
@@ -3000,12 +3486,12 @@ Future<void> exportProjectsCsv(BuildContext context) async {
                       }
                     }),
           ),
-          const Divider(color: kLine, height: 1),
+          Divider(color: kLine, height: 1),
           // ---- Liste (gefiltert, scrollbar) ----
           Flexible(
             child: vis.isEmpty
-                ? const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 24),
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 24),
                     child: Text('Keine Aufträge für diesen Filter.',
                         style: TextStyle(color: kMuted)))
                 : ListView(
@@ -3024,8 +3510,7 @@ Future<void> exportProjectsCsv(BuildContext context) async {
                             '${p.date.isEmpty ? '' : ' · ${dLong(p.date)}'}',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style:
-                                const TextStyle(color: kMuted, fontSize: 12)),
+                            style: TextStyle(color: kMuted, fontSize: 12)),
                         onChanged: (v) => setSt(() {
                           if (v == true) {
                             selected.add(p.id);
@@ -3074,7 +3559,7 @@ void showProfileSheet(BuildContext context) {
                 radius: 28,
                 backgroundColor: kAccent,
                 child: Text(initials(u.name),
-                    style: const TextStyle(
+                    style: TextStyle(
                         color: kAccentInk,
                         fontWeight: FontWeight.w800,
                         fontSize: 20))),
@@ -3083,7 +3568,7 @@ void showProfileSheet(BuildContext context) {
               Text(u.name,
                   style: const TextStyle(
                       fontSize: 18, fontWeight: FontWeight.w700)),
-              Text(u.role, style: const TextStyle(color: kMuted)),
+              Text(u.role, style: TextStyle(color: kMuted)),
             ]),
           ]),
           const SizedBox(height: 14),
@@ -3094,10 +3579,11 @@ void showProfileSheet(BuildContext context) {
                 Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const AdminScreen()));
               },
-              leading: const Icon(Icons.admin_panel_settings_outlined,
-                  color: kViolet),
+              leading:
+                  Icon(Icons.admin_panel_settings_outlined, color: kViolet),
               title: const Text('Verwaltung'),
-              subtitle: const Text('Benutzer & Rollen, Preise, Pauschalen, Kategorien',
+              subtitle: Text(
+                  'Benutzer & Rollen, Preise, Pauschalen, Kategorien',
                   style: TextStyle(color: kMuted, fontSize: 12)),
               tileColor: kCard,
               shape: RoundedRectangleBorder(
@@ -3111,7 +3597,7 @@ void showProfileSheet(BuildContext context) {
                 Navigator.pop(ctx);
                 await exportProjectsCsv(context);
               },
-              leading: const Icon(Icons.download, color: kBlue),
+              leading: Icon(Icons.download, color: kBlue),
               title: const Text('Aufträge als CSV exportieren'),
               tileColor: kCard,
               shape: RoundedRectangleBorder(
@@ -3124,11 +3610,27 @@ void showProfileSheet(BuildContext context) {
               Navigator.pop(ctx);
               showPinForm(context);
             },
-            leading: const Icon(Icons.tune, color: kAccent),
+            leading: Icon(Icons.tune, color: kAccent),
             title: const Text('PIN ändern'),
             tileColor: kCard,
             shape:
                 RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+          const SizedBox(height: 8),
+          ValueListenableBuilder<bool>(
+            valueListenable: gDark,
+            builder: (_, dark, __) => ListTile(
+              leading: Icon(dark ? Icons.dark_mode : Icons.light_mode_outlined,
+                  color: kAccent),
+              title: const Text('Dunkelmodus'),
+              trailing: Switch(
+                value: dark,
+                onChanged: (v) => Store.I.setDarkMode(v),
+              ),
+              tileColor: kCard,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14)),
+            ),
           ),
           const SizedBox(height: 8),
           SizedBox(
@@ -3215,9 +3717,10 @@ void showProjectForm(BuildContext context) {
               initialValue: customerId,
               dropdownColor: kCard2,
               items: [
-                const DropdownMenuItem(value: '', child: Text('– kein Kunde –')),
-                ...Store.I.customers
-                    .map((c) => DropdownMenuItem(value: c.id, child: Text(c.name))),
+                const DropdownMenuItem(
+                    value: '', child: Text('– kein Kunde –')),
+                ...Store.I.customers.map(
+                    (c) => DropdownMenuItem(value: c.id, child: Text(c.name))),
               ],
               onChanged: (v) => setSt(() => customerId = v ?? ''),
             ),
@@ -3280,11 +3783,11 @@ void showNoteForm(BuildContext context, Project p) {
               decoration:
                   const InputDecoration(hintText: 'Was ist heute passiert?'),
             ),
-            const Padding(
-              padding: EdgeInsets.only(top: 8, left: 2),
+            Padding(
+              padding: const EdgeInsets.only(top: 8, left: 2),
               child: Row(children: [
                 Icon(Icons.cloud_outlined, size: 15, color: kMuted),
-                SizedBox(width: 6),
+                const SizedBox(width: 6),
                 Expanded(
                   child: Text('Wetter wird beim Speichern automatisch erfasst.',
                       style: TextStyle(color: kMuted, fontSize: 12)),
@@ -3316,7 +3819,7 @@ void showNoteForm(BuildContext context, Project p) {
                   child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 6),
                     child: saving
-                        ? const SizedBox(
+                        ? SizedBox(
                             height: 18,
                             width: 18,
                             child: CircularProgressIndicator(
@@ -3334,8 +3837,8 @@ void showNoteForm(BuildContext context, Project p) {
 // ---- Stunden ----
 void showHoursForm(BuildContext context, Project p) {
   final names = {for (final u in Store.I.users) u.name}.toList();
-  String worker = Store.I.currentUser?.name ??
-      (names.isNotEmpty ? names.first : 'Ich');
+  String worker =
+      Store.I.currentUser?.name ?? (names.isNotEmpty ? names.first : 'Ich');
   if (!names.contains(worker)) names.insert(0, worker);
   final hrs = TextEditingController(text: '8');
   final task = TextEditingController();
@@ -3365,8 +3868,7 @@ void showHoursForm(BuildContext context, Project p) {
             _label('Tätigkeit'),
             TextField(
                 controller: task,
-                decoration:
-                    const InputDecoration(hintText: 'z. B. Mauern EG')),
+                decoration: const InputDecoration(hintText: 'z. B. Mauern EG')),
             _saveBtn('Speichern', () {
               p.hours.add(WorkHours(
                   id: uid(),
@@ -3411,8 +3913,8 @@ void showMaterialForm(BuildContext context, Project p) {
                 padding: const EdgeInsets.only(top: 12),
                 child: Text(
                     'Preis automatisch: ${eur(sel!.price)} / ${sel!.unit}',
-                    style: const TextStyle(
-                        color: kAccent, fontWeight: FontWeight.w600)),
+                    style:
+                        TextStyle(color: kAccent, fontWeight: FontWeight.w600)),
               ),
               _label('Menge (${sel!.unit})'),
               TextField(
@@ -3479,8 +3981,8 @@ void showDefectForm(BuildContext context, Project p, Defect? existing) {
           _label('Titel'),
           TextField(
               controller: title,
-              decoration: const InputDecoration(
-                  hintText: 'z. B. Riss in Wand EG')),
+              decoration:
+                  const InputDecoration(hintText: 'z. B. Riss in Wand EG')),
           _label('Beschreibung (optional)'),
           TextField(
               controller: desc,
@@ -3528,8 +4030,8 @@ void showCategoryForm(BuildContext context, String? existing) {
           final name = ctrl.text.trim();
           if (name.isEmpty) return;
           final s = Store.I;
-          final dup = s.arten
-              .any((a) => a.toLowerCase() == name.toLowerCase() && a != existing);
+          final dup = s.arten.any(
+              (a) => a.toLowerCase() == name.toLowerCase() && a != existing);
           if (dup) {
             snack(context, 'Diese Kategorie gibt es bereits.');
             return;
@@ -3629,8 +4131,7 @@ void showCustomerForm(BuildContext context, Customer? existing) {
           _label('Kontakt (Tel. / E-Mail)'),
           TextField(
               controller: contact,
-              decoration:
-                  const InputDecoration(hintText: 'z. B. 0621 123456')),
+              decoration: const InputDecoration(hintText: 'z. B. 0621 123456')),
           _saveBtn('Speichern', () {
             if (name.text.trim().isEmpty) return;
             if (existing != null) {
@@ -3667,8 +4168,8 @@ void showPauschaleForm(BuildContext context, Pauschale? existing) {
           _label('Bezeichnung'),
           TextField(
               controller: name,
-              decoration: const InputDecoration(
-                  hintText: 'z. B. Anfahrtspauschale')),
+              decoration:
+                  const InputDecoration(hintText: 'z. B. Anfahrtspauschale')),
           _label('Betrag (€)'),
           TextField(
               controller: amount,
@@ -3717,8 +4218,8 @@ void showRoleForm(BuildContext context, String? existing) {
             snack(context, 'Administrator kann nicht umbenannt werden.');
             return;
           }
-          final dup = s.roles
-              .any((r) => r.toLowerCase() == name.toLowerCase() && r != existing);
+          final dup = s.roles.any(
+              (r) => r.toLowerCase() == name.toLowerCase() && r != existing);
           if (dup) {
             snack(context, 'Diese Rolle gibt es bereits.');
             return;
@@ -3768,8 +4269,8 @@ void showRolePermsForm(BuildContext context, String role) {
                 ),
             ]),
             if (admin)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 10),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
                 child: Text('Administrator hat immer alle Rechte.',
                     style: TextStyle(color: kMuted)),
               )
