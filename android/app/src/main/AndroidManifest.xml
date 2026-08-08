@@ -1,6 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Wetterabruf im Bautagebuch (Open-Meteo) und kuenftige Server-Synchronisierung.
+         Stand bisher nur im Debug-Manifest, sodass im Release-Build jeder
+         Netzaufruf stumm scheiterte. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- Standort fuer das automatisch ermittelte Wetter (lib/weather.dart nutzt
+         LocationAccuracy.low, dafuer genuegt der ungefaehre Standort).
+         geolocator bringt die Berechtigung nicht selbst mit.
+         Fuer die geplante Ankunftserkennung per Geofence waere zusaetzlich
+         ACCESS_FINE_LOCATION noetig. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+
     <application
-        android:label="baudoc"
+        android:label="BauDoc"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

@@ -1,4 +1,4 @@
-package com.example.baudoc
+package de.baudoc.app
 
 import io.flutter.embedding.android.FlutterActivity
 
