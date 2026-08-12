@@ -253,13 +253,110 @@ class Note {
       temp: j['temp'] ?? '');
 }
 
+/// Ein Foto zum Auftrag.
+///
+/// Das Bild selbst liegt in der Dateiablage (Cloud Storage), im Datensatz
+/// steht nur der Verweis darauf. Anders geht es nicht: ein Firestore-Dokument
+/// darf 1 MB groß sein, ein Foto als Base64 belegt davon 135–340 KB. Nach ein
+/// paar Bildern ließe sich der Auftrag schlicht nicht mehr speichern – und
+/// jedes Laden der Auftragsliste zöge alle Bilder über das Mobilfunknetz mit,
+/// auch wenn sie niemand ansieht.
+class Photo {
+  String id;
+
+  /// Abrufadresse in der Dateiablage. Leer, solange das Bild nur als [data]
+  /// vorliegt.
+  ///
+  /// Sie enthält einen Schlüssel und funktioniert deshalb ohne Anmeldung – so
+  /// sind die Adressen von Firebase gebaut, und nur deshalb kann ein Browser
+  /// sie überhaupt anzeigen. Wer die Adresse hat, sieht das Bild; abgesichert
+  /// ist der Weg zur Adresse, nicht das Bild dahinter. Siehe storage.rules.
+  String url;
+
+  /// Ablageort in der Dateiablage – nötig zum Löschen. Aus der Abrufadresse
+  /// lässt er sich nicht zuverlässig zurückrechnen, deshalb steht er dabei.
+  String storagePath;
+
+  /// Wer hat das Foto aufgenommen, und wann.
+  String uploadedBy;
+  String createdAt;
+
+  /// Das Bild als Base64 – der Altbestand.
+  ///
+  /// Vor der Dateiablage war ein Foto genau das und sonst nichts. Solche
+  /// Einträge liegen auf jedem Gerät, das die App bisher benutzt hat; sie
+  /// werden einmalig nachgereicht. Bis dahin zeigt die App sie von hier, damit
+  /// in der Zwischenzeit kein Bild fehlt. Ohne Backend bleibt es dabei – auf
+  /// dem Gerätespeicher gibt es keine Dateiablage.
+  String data;
+
+  Photo({
+    required this.id,
+    this.url = '',
+    this.storagePath = '',
+    this.uploadedBy = '',
+    this.createdAt = '',
+    this.data = '',
+  });
+
+  /// Liegt das Bild in der Dateiablage – oder noch als Base64 daneben?
+  bool get inCloud => url.isNotEmpty;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'url': url,
+        'storagePath': storagePath,
+        'uploadedBy': uploadedBy,
+        'createdAt': createdAt,
+        // Nur mitschreiben, was es gibt: sonst stünde in jedem neuen Foto ein
+        // leeres Base64-Feld, das nie wieder etwas enthalten wird.
+        if (data.isNotEmpty) 'data': data,
+      };
+
+  factory Photo.fromJson(Map<String, dynamic> j) => Photo(
+        id: j['id'] ?? '',
+        url: j['url'] ?? '',
+        storagePath: j['storagePath'] ?? '',
+        uploadedBy: j['uploadedBy'] ?? '',
+        createdAt: j['createdAt'] ?? '',
+        data: j['data'] ?? '',
+      );
+
+  /// Aus einem gespeicherten Eintrag beliebigen Alters.
+  ///
+  /// Früher stand in der Liste nur die Base64-Zeichenkette. Diese Einträge
+  /// hier zu erkennen ist der Unterschied zwischen „die Bilder sind noch da"
+  /// und „nach dem Aktualisieren verschwunden".
+  static Photo fromAny(Object? eintrag, {String? ersatzId}) {
+    if (eintrag is Map) {
+      final foto = Photo.fromJson(Map<String, dynamic>.from(eintrag));
+      if (foto.id.isEmpty) foto.id = ersatzId ?? uid();
+      return foto;
+    }
+    return Photo(id: ersatzId ?? uid(), data: eintrag as String? ?? '');
+  }
+}
+
+/// Die Fotoliste eines gespeicherten Auftrags – alt wie neu.
+///
+/// Die Ersatz-Id folgt der Benennung, unter der die Fotos in der Datenbank
+/// abgelegt werden, damit ein Altbestand nach der Übernahme dieselben Namen
+/// trägt und nicht doppelt erscheint.
+List<Photo> _fotosAus(Object? roh) {
+  final liste = (roh ?? const []) as List;
+  return [
+    for (var i = 0; i < liste.length; i++)
+      Photo.fromAny(liste[i], ersatzId: 'foto_$i'),
+  ];
+}
+
 class Project {
   String id, name, type, address, status, date, due, customerId;
   List<WorkHours> hours;
   List<MaterialItem> materials;
   List<Task> tasks;
   List<Note> notes;
-  List<String> photos;
+  List<Photo> photos;
   List<Defect> defects;
   Project(
       {required this.id,
@@ -274,7 +371,7 @@ class Project {
       this.due = '',
       this.customerId = '',
       List<Note>? notes,
-      List<String>? photos,
+      List<Photo>? photos,
       List<Defect>? defects})
       : notes = notes ?? [],
         photos = photos ?? [],
@@ -293,7 +390,7 @@ class Project {
         'materials': materials.map((e) => e.toJson()).toList(),
         'tasks': tasks.map((e) => e.toJson()).toList(),
         'notes': notes.map((e) => e.toJson()).toList(),
-        'photos': photos,
+        'photos': photos.map((e) => e.toJson()).toList(),
         'defects': defects.map((e) => e.toJson()).toList(),
       };
   factory Project.fromJson(Map<String, dynamic> j) => Project(
@@ -315,7 +412,7 @@ class Project {
             ((j['tasks'] ?? []) as List).map((e) => Task.fromJson(e)).toList(),
         notes:
             ((j['notes'] ?? []) as List).map((e) => Note.fromJson(e)).toList(),
-        photos: ((j['photos'] ?? []) as List).map((e) => e as String).toList(),
+        photos: _fotosAus(j['photos']),
         defects: ((j['defects'] ?? []) as List)
             .map((e) => Defect.fromJson(e))
             .toList(),

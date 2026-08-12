@@ -13,7 +13,9 @@
 //
 //   projects/{id}            Kopfdaten + Material, Aufgaben, Notizen, Mängel
 //   projects/{id}/hours/{id} je Stundenzeile ein Dokument
-//   projects/{id}/photos/{id} je Foto ein Dokument
+//   projects/{id}/photos/{id} je Foto ein Dokument – **nur der Verweis**, die
+//                            Bilddaten liegen in der Dateiablage unter
+//                            projects/{id}/{fotoId}.jpg
 //   customers/{id}, catalog/{id}, pauschalen/{id}
 //   users/{uid}              Name, Rolle, E-Mail
 //   wages/{uid}              Stundenlohn – **getrennt**, weil Firestore Rechte
@@ -23,18 +25,32 @@
 //   settings/categories      Kategorien/Gewerke
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 
 import '../models.dart';
 import 'master_data_repository.dart';
 
 class FirestoreMasterDataRepository implements MasterDataRepository {
-  FirestoreMasterDataRepository({FirebaseFirestore? firestore})
-      : _db = firestore ?? FirebaseFirestore.instance;
+  FirestoreMasterDataRepository({
+    FirebaseFirestore? firestore,
+    FirebaseStorage? storage,
+  })  : _db = firestore ?? FirebaseFirestore.instance,
+        _uebergebeneAblage = storage;
 
   final FirebaseFirestore _db;
+
+  final FirebaseStorage? _uebergebeneAblage;
+
+  /// Erst beim ersten Zugriff: die Tests bauen diese Klasse mit einem
+  /// Firestore-Nachbau, ohne dass Firebase überhaupt gestartet ist. Der
+  /// Konstruktor dürfte dabei nicht werfen – gefragt wird die Ablage nur, wenn
+  /// wirklich ein Foto abgelegt wird.
+  late final FirebaseStorage _ablage =
+      _uebergebeneAblage ?? FirebaseStorage.instance;
 
   /// Derselbe Bestand, den auch der Store hält – wie bei der
   /// SharedPreferences-Umsetzung dieselben Listen, keine Kopien. Die Zuhörer
@@ -71,8 +87,10 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
   @override
   int pendingIn(String projectId) {
     var offen = _wartend['projects']?.contains(projectId) ?? false ? 1 : 0;
-    for (final schluessel in _wartend['hours'] ?? const <String>{}) {
-      if (schluessel.startsWith('$projectId/')) offen++;
+    for (final sammlung in ['hours', 'photos']) {
+      for (final schluessel in _wartend[sammlung] ?? const <String>{}) {
+        if (schluessel.startsWith('$projectId/')) offen++;
+      }
     }
     return offen;
   }
@@ -117,6 +135,20 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
       // Der Firestore-Nachbau in den Tests kennt diese Einstellung nicht – und
       // braucht sie auch nicht, er hält ohnehin alles im Speicher.
       debugPrint('Zwischenspeicher nicht einstellbar: $e');
+    }
+
+    try {
+      // Wie lange die Dateiablage einen Schreibvorgang wiederholt, bevor sie
+      // aufgibt. Voreingestellt sind **zehn Minuten**. Im Funkloch heißt das:
+      // der Monteur wählt ein Foto, und die App schweigt zehn Minuten lang –
+      // kein Bild, kein Hinweis, nichts. Eine knappe Minute reicht auch für
+      // eine schlechte Verbindung; danach ist eine ehrliche Absage mehr wert
+      // als weiteres Warten.
+      _ablage
+        ..setMaxUploadRetryTime(const Duration(seconds: 45))
+        ..setMaxOperationRetryTime(const Duration(seconds: 45));
+    } catch (e) {
+      debugPrint('Wiederholdauer der Ablage nicht einstellbar: $e');
     }
   }
 
@@ -170,6 +202,9 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
       data.rolesMigrated = true;
       _data = data;
       _hoereZu();
+      // Nebenher: der Start darf nicht darauf warten, dass alte Bilder
+      // hochgeladen sind. Bis dahin zeigt die App sie aus dem Base64 daneben.
+      unawaited(_hebeAltfotosInDieAblage());
       return data;
     } catch (e, st) {
       // Kein Netz *und* kein Zwischenspeicher, oder die Regeln verweigern den
@@ -233,8 +268,7 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
     }
     for (final d in (await _db.collectionGroup('photos').get()).docs) {
       final p = auftraege[d.reference.parent.parent?.id];
-      final bild = d.data()['data'] as String?;
-      if (p != null && bild != null) p.photos.add(bild);
+      p?.photos.add(Photo.fromAny(d.data(), ersatzId: d.id));
     }
 
     return auftraege.values.toList();
@@ -295,6 +329,16 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
         _merkeWartend('hours', s,
             (d) => '${d.reference.parent.parent?.id ?? '?'}/${d.id}');
         _uebernimmStunden(s);
+      }),
+      // Fotos ebenso: was der Monteur auf der Baustelle aufnimmt, soll im Büro
+      // erscheinen, ohne dass jemand die App neu startet.
+      _db
+          .collectionGroup('photos')
+          .snapshots(includeMetadataChanges: true)
+          .listen((s) {
+        _merkeWartend('photos', s,
+            (d) => '${d.reference.parent.parent?.id ?? '?'}/${d.id}');
+        _uebernimmFotos(s);
       }),
     ]);
   }
@@ -376,6 +420,39 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
     if (geaendert) _onRemoteChange?.call();
   }
 
+  void _uebernimmFotos(QuerySnapshot<Map<String, dynamic>> schnappschuss) {
+    if (_data == null || _eigenerSchreibvorgang) return;
+    var geaendert = false;
+
+    for (final aenderung in schnappschuss.docChanges) {
+      final auftragId = aenderung.doc.reference.parent.parent?.id;
+      if (auftragId == null) continue;
+      final p = _auftrag(auftragId);
+      if (p == null) continue;
+
+      final id = aenderung.doc.id;
+      final i = p.photos.indexWhere((f) => f.id == id);
+
+      if (aenderung.type == DocumentChangeType.removed) {
+        if (i >= 0) {
+          p.photos.removeAt(i);
+          geaendert = true;
+        }
+        continue;
+      }
+
+      final foto = Photo.fromAny(aenderung.doc.data(), ersatzId: id);
+      if (i >= 0) {
+        p.photos[i] = foto;
+      } else {
+        p.photos.add(foto);
+      }
+      geaendert = true;
+    }
+
+    if (geaendert) _onRemoteChange?.call();
+  }
+
   Project? _auftrag(String id) {
     for (final p in _data?.projects ?? const <Project>[]) {
       if (p.id == id) return p;
@@ -415,6 +492,19 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
 
   @override
   Future<void> deleteProject(String id) async {
+    // Die Bilddateien zuerst einsammeln: nach dem Löschen der Dokumente wüsste
+    // niemand mehr, wo sie liegen, und sie blieben für immer in der Ablage
+    // stehen – bezahlt wird sie nach belegtem Speicher.
+    final bilder = <String>[];
+    try {
+      for (final d in (await _fotos(id).get()).docs) {
+        final pfad = d.data()['storagePath'] as String?;
+        if (pfad != null && pfad.isNotEmpty) bilder.add(pfad);
+      }
+    } catch (e) {
+      debugPrint('Bilddateien zum Auftrag $id nicht ermittelbar: $e');
+    }
+
     await _schreibe(() async {
       // Unterkollektionen verschwinden nicht von selbst, wenn das Dokument
       // gelöscht wird – Firestore kennt keine solche Beziehung.
@@ -427,6 +517,10 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
       }
       await auftrag.delete();
     });
+
+    for (final pfad in bilder) {
+      await _loescheBilddatei(pfad);
+    }
   }
 
   @override
@@ -448,6 +542,111 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
           .collection('hours')
           .doc(rowId)
           .delete());
+
+  CollectionReference<Map<String, dynamic>> _fotos(String projectId) =>
+      _db.collection('projects').doc(projectId).collection('photos');
+
+  /// Ein Foto ablegen: erst das Bild in die Dateiablage, dann der Verweis in
+  /// die Datenbank.
+  ///
+  /// Diese Reihenfolge ist wichtig. Umgekehrt stünde in der Auftragsliste ein
+  /// Verweis auf eine Datei, die es (noch) nicht gibt – ein dauerhaft kaputtes
+  /// Bild, das niemand mehr richtigstellt.
+  ///
+  /// **Ohne Netz geht es nicht.** Bei der Datenbank nimmt Firestore den
+  /// Schreibvorgang lokal an und reicht ihn nach; für die Dateiablage gibt es
+  /// nichts dergleichen. Sie versucht es einige Minuten lang, danach ist
+  /// Schluss. Deshalb gibt es hier null zurück statt stillschweigend nichts zu
+  /// tun: der Monteur muss erfahren, dass sein Foto nicht angekommen ist.
+  @override
+  Future<Photo?> addPhoto(String projectId, Uint8List bytes,
+      {required String uploadedBy}) async {
+    final id = uid();
+    final pfad = 'projects/$projectId/$id.jpg';
+    try {
+      final verweis = _ablage.ref(pfad);
+      // Ohne Angabe des Typs landet das Bild als `application/octet-stream` in
+      // der Ablage – der Browser böte es dann zum Herunterladen an, statt es
+      // anzuzeigen.
+      await verweis
+          .putData(bytes, SettableMetadata(contentType: 'image/jpeg'));
+      final foto = Photo(
+        id: id,
+        url: await verweis.getDownloadURL(),
+        storagePath: pfad,
+        uploadedBy: uploadedBy,
+        createdAt: DateTime.now().toIso8601String(),
+      );
+      await _schreibe(
+          () => _fotos(projectId).doc(id).set(foto.toJson()..remove('id')));
+      return foto;
+    } catch (e) {
+      debugPrint('Foto nicht abgelegt: $e');
+      return null;
+    }
+  }
+
+  /// Erst der Verweis, dann die Datei.
+  ///
+  /// Bleibt das Löschen der Datei stecken, ist das Foto trotzdem aus dem
+  /// Auftrag verschwunden – so, wie es der Bediener wollte. Andersherum bliebe
+  /// ein Verweis auf ein nicht mehr vorhandenes Bild in der Liste stehen.
+  @override
+  Future<void> deletePhoto(String projectId, Photo photo) async {
+    await _schreibe(() => _fotos(projectId).doc(photo.id).delete());
+    await _loescheBilddatei(photo.storagePath);
+  }
+
+  Future<void> _loescheBilddatei(String pfad) async {
+    if (pfad.isEmpty) return;
+    try {
+      await _ablage.ref(pfad).delete();
+    } catch (e) {
+      // Der Verweis ist schon weg; eine Datei, die niemand mehr findet, ist
+      // ärgerlich, aber nichts, was die Bedienung aufhalten dürfte.
+      debugPrint('Bilddatei nicht gelöscht: $e');
+    }
+  }
+
+  /// Hebt Fotos aus der Zeit vor der Dateiablage nach oben.
+  ///
+  /// Der Altbestand steht als Base64 im Foto-Dokument – genau das, was dieser
+  /// Schritt abschafft.
+  ///
+  /// Ein Kennzeichen braucht es dafür nicht: ob ein Foto schon oben ist, sieht
+  /// man ihm an – es hat dann eine Abrufadresse und kein Base64 mehr. Damit ist
+  /// die Übernahme von sich aus wiederholbar und übersteht einen Abbruch mitten
+  /// in der Liste.
+  Future<void> _hebeAltfotosInDieAblage() async {
+    var gehoben = 0;
+    for (final p in List.of(_data?.projects ?? const <Project>[])) {
+      for (final foto in List.of(p.photos)) {
+        if (foto.inCloud || foto.data.isEmpty) continue;
+        try {
+          final pfad = 'projects/${p.id}/${foto.id}.jpg';
+          final verweis = _ablage.ref(pfad);
+          await verweis.putData(
+              base64Decode(foto.data), SettableMetadata(contentType: 'image/jpeg'));
+          foto
+            ..url = await verweis.getDownloadURL()
+            ..storagePath = pfad
+            ..data = '';
+          await _schreibe(() =>
+              _fotos(p.id).doc(foto.id).set(foto.toJson()..remove('id')));
+          gehoben++;
+        } catch (e) {
+          // Kein Netz, oder kein Recht an Aufträgen. Das Bild bleibt als
+          // Base64 stehen und wird beim nächsten Start erneut versucht –
+          // verloren geht dabei nichts.
+          debugPrint('Altfoto ${foto.id} nicht übernommen: $e');
+        }
+      }
+    }
+    if (gehoben > 0) {
+      debugPrint('$gehoben Fotos in die Dateiablage übernommen.');
+      _onRemoteChange?.call();
+    }
+  }
 
   @override
   Future<void> saveCustomer(Customer customer) => _schreibe(() => _db
@@ -604,13 +803,12 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
               .doc(h.id)
               .set(h.toJson()..remove('id'));
         }
-        for (var i = 0; i < p.photos.length; i++) {
-          await _db
-              .collection('projects')
-              .doc(p.id)
-              .collection('photos')
-              .doc('foto_$i')
-              .set({'data': p.photos[i]});
+        // Fotos kommen hier noch als Base64 vom Gerät. Sie werden gleich so
+        // abgelegt und gleich darauf von [_hebeAltfotosInDieAblage] in die
+        // Dateiablage gehoben – der Weg ist derselbe wie für jeden anderen
+        // Altbestand, und dadurch gibt es ihn nur einmal.
+        for (final foto in p.photos) {
+          await _fotos(p.id).doc(foto.id).set(foto.toJson()..remove('id'));
         }
       }
       await _db
@@ -625,6 +823,7 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
       }
     });
     _hoereZu();
+    unawaited(_hebeAltfotosInDieAblage());
   }
 
   /// Gemeinsamer Rahmen für jeden Schreibvorgang.

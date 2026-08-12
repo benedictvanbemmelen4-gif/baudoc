@@ -1,0 +1,74 @@
+rules_version = '2';
+
+// Serverseitige Rechteprüfung für die Dateiablage (Fotos).
+//
+// Dieselbe Überlegung wie in firestore.rules: was hier nicht steht, lässt sich
+// mit ein paar Zeilen Skript umgehen. Die Regeln spiegeln bewusst die des
+// Foto-Dokuments – ein Bild ohne Verweis nützt niemandem, aber wer hochladen
+// darf, ohne dass jemand es merkt, verursacht Kosten: bezahlt wird nach
+// belegtem Speicher.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function angemeldet() {
+      return request.auth != null;
+    }
+
+    /// Hat der Aufrufer das Recht [recht]?
+    ///
+    /// Wortgleich zu `darf()` in firestore.rules, nur muss die Rechteliste von
+    /// dort geholt werden – die Dateiablage hat keine eigene. Der
+    /// Administrator darf immer alles, genau wie in Store.can().
+    function darf(recht) {
+      return angemeldet() && (
+        request.auth.token.role == 'Administrator'
+        || (
+          firestore.exists(/databases/(default)/documents/roles/$(request.auth.token.role))
+          && recht in firestore.get(/databases/(default)/documents/roles/$(request.auth.token.role)).data.perms
+        )
+      );
+    }
+
+    // Baustellenfotos.
+    //
+    // Lesen darf jeder Angemeldete: die Fotos sind der Nachweis gegenüber dem
+    // Kunden, und wer den Auftrag sieht, sieht auch seine Bilder.
+    //
+    // **Achtung, die Regel ist hier nicht das letzte Wort.** Die Abrufadresse,
+    // die die App im Foto-Dokument ablegt, enthält einen Schlüssel und
+    // funktioniert damit *ohne Anmeldung* – so sind die Adressen von Firebase
+    // gebaut, und nur deshalb kann sie ein Browser überhaupt anzeigen. Wer eine
+    // solche Adresse in die Hände bekommt, sieht das Bild. Geschützt ist also
+    // der Weg zur Adresse (die Adressen stehen in Firestore, und das ist
+    // abgesichert), nicht das Bild dahinter. Für Baustellenfotos ist das
+    // vertretbar; für etwas Vertrauliches wäre es das nicht – dann müsste die
+    // App die Bytes über das SDK holen statt über eine Adresse.
+    //
+    // Hochladen nur mit dem Recht an Aufträgen – dasselbe, das schon der
+    // Verweis in der Datenbank verlangt. Wären die beiden verschieden, könnte
+    // jemand Dateien ablegen, die in keiner Liste auftauchen und die niemand
+    // je wieder findet.
+    match /projects/{auftrag}/{datei} {
+      allow read: if angemeldet();
+
+      // 10 MB ist reichlich: die App verkleinert vor dem Hochladen auf 1280 px
+      // bei Qualität 55, das sind 100–250 KB. Die Grenze fängt nicht den
+      // Normalfall ab, sondern den Missbrauch.
+      allow write: if darf('editProjects')
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+
+      // Beim Löschen gibt es kein `request.resource` – die Größenprüfung oben
+      // träfe hier ins Leere und würde jedes Löschen abweisen.
+      allow delete: if darf('editProjects');
+    }
+
+    // Alles Übrige ist verboten – wie in firestore.rules. Ohne diese Regel
+    // stünde ein künftig hinzugefügter Ordner offen, weil niemand daran denkt,
+    // ihn hier einzutragen.
+    match /{pfad=**} {
+      allow read, write: if false;
+    }
+  }
+}

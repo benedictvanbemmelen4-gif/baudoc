@@ -10,6 +10,8 @@
 // nicht „schreibe alles". Die heutige Umsetzung schreibt zwar weiterhin einen
 // einzigen JSON-Text, aber das ist dann ihr Detail und nicht mehr das der App.
 
+import 'dart:typed_data';
+
 import '../models.dart';
 
 /// Der gesamte Bestand auf einmal.
@@ -157,6 +159,23 @@ abstract class MasterDataRepository {
   /// Zeile des anderen – und das wären abrechenbare Stunden.
   Future<void> saveWorkHours(String projectId, WorkHours row);
   Future<void> deleteWorkHours(String projectId, String rowId);
+
+  /// Ein Foto ablegen – [bytes] ist das bereits verkleinerte Bild.
+  ///
+  /// Ebenfalls getrennt vom Auftrag, und das aus einem zweiten Grund: **wohin**
+  /// die Bilddaten gehören, entscheidet die Umsetzung. Auf dem Gerätespeicher
+  /// bleiben sie als Base64 beim Datensatz; mit Backend wandern sie in die
+  /// Dateiablage und im Datensatz steht nur der Verweis. Die Oberfläche merkt
+  /// von diesem Unterschied nichts.
+  ///
+  /// Gibt das fertige [Photo] zurück – oder null, wenn es nicht abgelegt werden
+  /// konnte. Anders als beim Schreiben in die Datenbank ist das ein Fall, den
+  /// der Aufrufer melden muss: für die Dateiablage gibt es keinen lokalen
+  /// Zwischenspeicher, der den Vorgang später nachreicht.
+  Future<Photo?> addPhoto(String projectId, Uint8List bytes,
+      {required String uploadedBy});
+
+  Future<void> deletePhoto(String projectId, Photo photo);
 
   Future<void> saveCustomer(Customer customer);
   Future<void> deleteCustomer(String id);

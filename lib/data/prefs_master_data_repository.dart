@@ -107,6 +107,33 @@ class PrefsMasterDataRepository implements MasterDataRepository {
     await _write();
   }
 
+  /// Ohne Backend gibt es keine Dateiablage – das Bild bleibt als Base64 beim
+  /// Auftrag, so wie die App es immer gehalten hat. Die 1-MB-Grenze, die den
+  /// Umbau nötig macht, gilt hier nicht: SharedPreferences kennt keine.
+  @override
+  Future<Photo?> addPhoto(String projectId, Uint8List bytes,
+      {required String uploadedBy}) async {
+    final p = _projekt(projectId);
+    if (p == null) return null;
+    final foto = Photo(
+      id: uid(),
+      uploadedBy: uploadedBy,
+      createdAt: DateTime.now().toIso8601String(),
+      data: base64Encode(bytes),
+    );
+    p.photos.add(foto);
+    await _write();
+    return foto;
+  }
+
+  @override
+  Future<void> deletePhoto(String projectId, Photo photo) async {
+    final p = _projekt(projectId);
+    if (p == null) return;
+    p.photos.removeWhere((f) => f.id == photo.id);
+    await _write();
+  }
+
   Project? _projekt(String id) {
     for (final p in _data?.projects ?? const <Project>[]) {
       if (p.id == id) return p;

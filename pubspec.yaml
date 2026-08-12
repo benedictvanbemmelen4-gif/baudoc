@@ -53,6 +53,15 @@ dependencies:
   # Nachreichen offline entstandener Änderungen mit – deshalb braucht BauDoc
   # keine eigene Synchronisierung.
   cloud_firestore: ^6.1.0
+  # Die Dateiablage für Fotos. Bilddaten haben in der Datenbank nichts zu
+  # suchen: ein Firestore-Dokument darf 1 MB groß sein, ein Foto als Base64
+  # belegt davon 135–340 KB. Im Dokument steht künftig nur der Verweis.
+  firebase_storage: ^13.0.0
+
+  # Fotos aus dem Netz mit Zwischenspeicher auf der Platte. `Image.network`
+  # allein merkt sich die Bilder nur im Arbeitsspeicher – nach jedem Neustart
+  # lüde die App sie erneut, auf dem Weg zur Baustelle über das Mobilfunknetz.
+  cached_network_image: ^3.4.1
 
 dev_dependencies:
   flutter_test:
@@ -61,6 +70,9 @@ dev_dependencies:
   # Firestore-Nachbau für Tests: die Umsetzung lässt sich damit prüfen, ohne
   # dass ein Projekt im Netz nötig wäre.
   fake_cloud_firestore: ^4.0.0
+  # Dasselbe für die Dateiablage: die Fotos lassen sich damit prüfen, ohne bei
+  # jedem Testlauf Bilder ins Netz zu schieben.
+  firebase_storage_mocks: ^0.8.1
 
 flutter:
   uses-material-design: true

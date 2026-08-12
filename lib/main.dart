@@ -1,5 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
+// Fotos aus der Dateiablage mit Zwischenspeicher auf der Platte – ohne den
+// lüde die App jedes Bild nach jedem Neustart erneut über das Mobilfunknetz.
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -461,6 +465,43 @@ class Store extends ChangeNotifier {
 
   void removeWorkHours(String projectId, String rowId) =>
       _write(_repo.deleteWorkHours(projectId, rowId));
+
+  /// Ein Foto ablegen. Wohin die Bilddaten gehen, entscheidet die Speicherung:
+  /// mit Backend in die Dateiablage, ohne in den Datensatz.
+  ///
+  /// Als einziger Schreibweg wartet dieser auf sein Ergebnis. Der Grund ist die
+  /// Dateiablage: sie hat keinen lokalen Zwischenspeicher, der einen
+  /// misslungenen Versuch später nachreicht. Ob das Foto angekommen ist, kann
+  /// deshalb nur hier beantwortet werden – und der Monteur muss es erfahren.
+  Future<bool> addPhoto(Project p, Uint8List bytes) async {
+    // Ein Bild hochzuladen dauert – auf der Baustelle auch mal eine halbe
+    // Minute. Ohne diesen Zähler passierte in dieser Zeit auf dem Bildschirm
+    // schlicht nichts, und der Monteur tippt ein zweites Mal.
+    _fotosImFlug[p.id] = uploadingIn(p.id) + 1;
+    notifyListeners();
+    try {
+      final foto =
+          await _repo.addPhoto(p.id, bytes, uploadedBy: currentUser?.id ?? '');
+      if (foto == null) return false;
+      // Die Gerätespeicherung hat es schon eingehängt, die Firestore-Umsetzung
+      // überlässt das ihrem Zuhörer – der kann jederzeit vorher dran gewesen
+      // sein. Deshalb hier prüfen statt blind anhängen.
+      if (!p.photos.any((f) => f.id == foto.id)) p.photos.add(foto);
+      return true;
+    } finally {
+      _fotosImFlug[p.id] = uploadingIn(p.id) - 1;
+      notifyListeners();
+    }
+  }
+
+  /// Wie viele Fotos sind bei diesem Auftrag gerade unterwegs?
+  final Map<String, int> _fotosImFlug = {};
+  int uploadingIn(String projectId) => _fotosImFlug[projectId] ?? 0;
+
+  void removePhoto(Project p, Photo foto) {
+    p.photos.removeWhere((f) => f.id == foto.id);
+    _write(_repo.deletePhoto(p.id, foto));
+  }
 
   void saveCustomer(Customer c) => _write(_repo.saveCustomer(c));
   void removeCustomer(String id) => _write(_repo.deleteCustomer(id));
@@ -2590,8 +2631,7 @@ class ProjectScreen extends StatelessWidget {
                 child: Stack(children: [
                   ClipRRect(
                     borderRadius: BorderRadius.circular(12),
-                    child: Image.memory(base64Decode(ph),
-                        width: 92, height: 92, fit: BoxFit.cover),
+                    child: _fotoBild(ph),
                   ),
                   Positioned(
                     right: 2,
@@ -2599,10 +2639,7 @@ class ProjectScreen extends StatelessWidget {
                     child: GestureDetector(
                       onTap: () async {
                         final ok = await confirm(context, 'Foto löschen?');
-                        if (ok) {
-                          p.photos.remove(ph);
-                          Store.I.saveProject(p);
-                        }
+                        if (ok) Store.I.removePhoto(p, ph);
                       },
                       child: Container(
                         padding: const EdgeInsets.all(3),
@@ -2614,6 +2651,29 @@ class ProjectScreen extends StatelessWidget {
                     ),
                   ),
                 ]),
+              ),
+            // Was gerade hochlädt. Ohne diese Kachel bliebe der Bildschirm
+            // unverändert, bis das Bild oben ist – und ein Monteur, bei dem
+            // nichts passiert, tippt noch einmal.
+            for (var i = 0; i < Store.I.uploadingIn(p.id); i++)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Container(
+                  width: 92,
+                  height: 92,
+                  decoration: BoxDecoration(
+                    color: kCard2,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Center(
+                    child: SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: kAccent),
+                    ),
+                  ),
+                ),
               ),
             GestureDetector(
               onTap: () => _addPhoto(context, p),
@@ -2639,14 +2699,50 @@ class ProjectScreen extends StatelessWidget {
         ),
       );
 
+  /// Das Bild selbst: aus der Dateiablage – oder, solange es noch nicht oben
+  /// ist, aus dem Base64 daneben.
+  ///
+  /// Beide Fälle gibt es gleichzeitig, und zwar so lange, bis der letzte
+  /// Altbestand nachgereicht ist. Für den Bediener soll dabei kein Unterschied
+  /// erkennbar sein.
+  Widget _fotoBild(Photo foto) {
+    if (!foto.inCloud) {
+      if (foto.data.isEmpty) return _fotoKachel(Icons.broken_image_outlined);
+      return Image.memory(base64Decode(foto.data),
+          width: 92, height: 92, fit: BoxFit.cover);
+    }
+    return CachedNetworkImage(
+      imageUrl: foto.url,
+      width: 92,
+      height: 92,
+      fit: BoxFit.cover,
+      placeholder: (_, __) => _fotoKachel(Icons.image_outlined),
+      // Im Funkloch und noch nicht im Zwischenspeicher. Kein Ladekringel, der
+      // ewig dreht – das Bild kommt hier nicht mehr.
+      errorWidget: (_, __, ___) => _fotoKachel(Icons.cloud_off_outlined),
+    );
+  }
+
+  Widget _fotoKachel(IconData ic) => Container(
+        width: 92,
+        height: 92,
+        color: kCard2,
+        child: Icon(ic, color: kMuted, size: 22),
+      );
+
   Future<void> _addPhoto(BuildContext context, Project p) async {
     try {
       final x = await ImagePicker().pickImage(
           source: ImageSource.gallery, imageQuality: 55, maxWidth: 1280);
       if (x == null) return;
       final bytes = await x.readAsBytes();
-      p.photos.add(base64Encode(bytes));
-      Store.I.saveProject(p);
+      final abgelegt = await Store.I.addPhoto(p, bytes);
+      if (!abgelegt && context.mounted) {
+        // Die Dateiablage kann nicht offline, anders als die Datenbank. Das
+        // stillschweigend zu verschlucken hieße: der Monteur hält das Foto für
+        // gesichert und es ist nicht da.
+        snack(context, 'Foto nicht gespeichert – dafür wird Netz gebraucht.');
+      }
     } catch (_) {
       if (context.mounted) {
         snack(context, 'Foto konnte nicht geladen werden.');
