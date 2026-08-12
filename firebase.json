@@ -1,1 +1,34 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"baudoc-c54a9","appId":"1:561002074373:android:7b8ac388cc275d192e276c","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"baudoc-c54a9","configurations":{"android":"1:561002074373:android:7b8ac388cc275d192e276c","web":"1:561002074373:web:d2187dbe087260ee2e276c"}}}}}}
+{
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log"
+      ]
+    }
+  ],
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "baudoc-c54a9",
+          "appId": "1:561002074373:android:7b8ac388cc275d192e276c",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "baudoc-c54a9",
+          "configurations": {
+            "android": "1:561002074373:android:7b8ac388cc275d192e276c",
+            "web": "1:561002074373:web:d2187dbe087260ee2e276c"
+          }
+        }
+      }
+    }
+  }
+}

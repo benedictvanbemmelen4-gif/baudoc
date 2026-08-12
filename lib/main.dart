@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -6,6 +7,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 // Zugangsdaten des Firebase-Projekts, erzeugt von `flutterfire configure`.
 import 'firebase_options.dart';
+
+// Anmeldung hinter einem Vertrag (lib/auth/).
+import 'auth/auth_repository.dart';
+import 'auth/firebase_auth_repository.dart';
 
 // Datenmodelle und Stammdaten-Konstanten. Weitergereicht (`export`), weil
 // andere Module sie bisher aus main.dart bezogen haben – etwa
@@ -112,6 +117,13 @@ class Store extends ChangeNotifier {
   /// Firestore – hier wird dann eine Zeile getauscht, sonst nichts.
   final MasterDataRepository _repo = PrefsMasterDataRepository();
 
+  /// Die Anmeldung.
+  ///
+  /// `late` mit Vorbelegung, nicht sofort erzeugt: `FirebaseAuth.instance`
+  /// verlangt ein gestartetes Firebase. Ein Test, der vorher eine eigene
+  /// Umsetzung zuweist, kommt so ganz ohne Firebase aus.
+  late AuthRepository auth = FirebaseAuthRepository();
+
   /// Der Bestand. Die Listen sind **dieselben Objekte**, die auch das
   /// Repository hält: was die Oberfläche an einem Auftrag ändert, sieht die
   /// Speicherung ohne Umweg.
@@ -127,12 +139,28 @@ class Store extends ChangeNotifier {
   Map<String, List<String>> get rolePerms => _data.rolePerms;
   bool get online => _data.online;
 
+  /// Kennung des angemeldeten Kontos (Firebase-uid). Wird ausschließlich aus
+  /// [_onAccount] gesetzt – die Anmeldung führt Firebase, nicht die App.
   String? sessionId;
 
-  /// Nur noch für Sitzung und Dunkelmodus zuständig – die Stammdaten laufen
-  /// vollständig über [_repo].
+  /// Steht der Anmeldezustand schon fest?
+  ///
+  /// Firebase stellt eine bestehende Sitzung beim Start wieder her, das dauert
+  /// einen Augenblick. Ohne dieses Kennzeichen blitzte in dieser Zeit der
+  /// Anmeldebildschirm auf, obwohl der Benutzer längst angemeldet ist.
+  bool authReady = false;
+
+  /// Angemeldet, aber ohne zugewiesene Rolle – siehe [RootGate].
+  bool get awaitingRole => sessionId != null && (currentUser?.role ?? '').isEmpty;
+
+  StreamSubscription<Account?>? _authSub;
+
+  /// Nur noch für den Dunkelmodus zuständig – die Stammdaten laufen über
+  /// [_repo], die Sitzung über [auth].
   late SharedPreferences _p;
 
+  /// Alter Schlüssel der selbstgebauten Sitzung. Bleibt nur, um ihn einmal
+  /// aufzuräumen; die Sitzung führt jetzt Firebase.
   static const _skey = 'baudoc.session';
 
   AppUser? get currentUser {
@@ -216,7 +244,88 @@ class Store extends ChangeNotifier {
     // Zeiterfassung ihre Sitzung sehr wohl behält.
     if (!ok || changed) await _repo.replaceAll(_data);
 
-    sessionId = _p.getString(_skey);
+    // Die selbstgebaute Sitzung ist abgelöst. Der alte Eintrag wird einmalig
+    // entfernt, damit nach einem Abmelden nichts zurückbleibt, das aussieht,
+    // als wäre noch jemand angemeldet.
+    await _p.remove(_skey);
+  }
+
+  // ---------------------------------------------------------------------
+  // Anmeldung
+  // ---------------------------------------------------------------------
+
+  /// Hört auf den Anmeldezustand. Einmal beim App-Start aufgerufen.
+  ///
+  /// Ein zweiter Aufruf hört neu hin statt einen zweiten Empfänger anzuhängen –
+  /// so kann ein Test eine eigene Anmeldung einsetzen, ohne dass die alte
+  /// weiterläuft.
+  void watchAuth() {
+    _authSub?.cancel();
+    _authSub = auth.changes().listen(_onAccount, onError: (Object e) {
+      // Kein Netz oder kaputte Konfiguration: dann eben nicht angemeldet.
+      // Blockieren darf das den Start nicht.
+      debugPrint('Anmeldezustand nicht lesbar: $e');
+      authReady = true;
+      notifyListeners();
+    });
+  }
+
+  /// Übernimmt ein angemeldetes Konto in den lokalen Bestand.
+  ///
+  /// Zu jedem Konto gehört ein [AppUser] mit **derselben** Kennung – daran
+  /// hängen Stundenlohn, Zeiterfassung und die Zuordnung erfasster Stunden.
+  /// Fehlt er (frisches Gerät, neu angelegtes Konto), wird er hier angelegt.
+  /// Name und Rolle kommen dabei vom Server: dort stehen sie verbindlich, in
+  /// der App nur zur Anzeige.
+  void _onAccount(Account? account) {
+    authReady = true;
+
+    if (account == null) {
+      sessionId = null;
+      notifyListeners();
+      return;
+    }
+
+    sessionId = account.uid;
+    final name = account.name.trim().isNotEmpty
+        ? account.name.trim()
+        : account.email.split('@').first;
+
+    final i = users.indexWhere((u) => u.id == account.uid);
+    if (i < 0) {
+      final neu = AppUser(
+        id: account.uid,
+        name: name,
+        role: account.role,
+        email: account.email,
+      );
+      users.add(neu);
+      _sicherstellenRolleBekannt(neu.role);
+      saveUser(neu);
+    } else {
+      final u = users[i];
+      final geaendert =
+          u.name != name || u.email != account.email || u.role != account.role;
+      u.name = name;
+      u.email = account.email;
+      // Leere Rolle heißt „Server hat (noch) keine": den lokalen Stand dann
+      // nicht überschreiben, sonst verliert ein Administrator im Funkloch
+      // seine Rechte, nur weil das Token nicht erneuert werden konnte.
+      if (account.role.isNotEmpty) u.role = account.role;
+      _sicherstellenRolleBekannt(u.role);
+      if (geaendert) saveUser(u);
+    }
+    notifyListeners();
+  }
+
+  /// Eine vom Server vergebene Rolle kann in dieser Installation unbekannt
+  /// sein. Dann wird sie aufgenommen, damit Rechte-Ansicht und Auswahllisten
+  /// sie zeigen.
+  void _sicherstellenRolleBekannt(String role) {
+    if (role.isEmpty || roles.contains(role)) return;
+    roles.add(role);
+    rolePerms[role] = _defaultPermsFor(role);
+    _write(_repo.saveSettings());
   }
 
   // ---------------------------------------------------------------------
@@ -256,14 +365,6 @@ class Store extends ChangeNotifier {
     op.catchError((Object e, StackTrace st) {
       debugPrint('Stammdaten konnten nicht gespeichert werden: $e\n$st');
     });
-  }
-
-  void _saveSession() {
-    if (sessionId != null) {
-      _p.setString(_skey, sessionId!);
-    } else {
-      _p.remove(_skey);
-    }
   }
 
   void setDarkMode(bool v) {
@@ -367,24 +468,9 @@ class Store extends ChangeNotifier {
     );
   }
 
-  // Auth
-  bool login(String id, String pin) {
-    for (final u in users) {
-      if (u.id == id && u.pin == pin) {
-        sessionId = u.id;
-        _saveSession();
-        notifyListeners();
-        return true;
-      }
-    }
-    return false;
-  }
-
-  void logout() {
-    sessionId = null;
-    _saveSession();
-    notifyListeners();
-  }
+  /// Abmelden. Der Rest läuft über [_onAccount], sobald Firebase die Änderung
+  /// meldet – deshalb wird hier nichts von Hand zurückgesetzt.
+  Future<void> logout() => auth.signOut();
 
   Project? projectById(String id) {
     for (final p in projects) {
@@ -437,6 +523,10 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await _initFirebase();
   await Store.I.load();
+  // Nach load(): der Anmeldezustand trägt einen Benutzer in den Bestand ein
+  // und braucht ihn deshalb bereits geladen. Bewusst nicht abgewartet – die
+  // Oberfläche zeigt so lange den Ladezustand, statt den Start zu verzögern.
+  Store.I.watchAuth();
   // Stellt einen laufenden Timer nach App-Neustart oder OS-Kill wieder her.
   await initTimeTracking();
   runApp(const BauDocApp());
@@ -574,9 +664,71 @@ class RootGate extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: Store.I,
-      builder: (_, __) => Store.I.currentUser == null
-          ? const LoginScreen()
-          : const HomeScreen(),
+      builder: (_, __) {
+        final s = Store.I;
+        // Solange Firebase die gespeicherte Sitzung wiederherstellt, ist noch
+        // nicht entschieden, wer angemeldet ist. Ohne diesen Zwischenschritt
+        // sähe der Benutzer bei jedem Start kurz den Anmeldebildschirm.
+        if (!s.authReady) return const _StartingScreen();
+        if (s.currentUser == null) return const LoginScreen();
+        // Konto vorhanden, aber ohne Rolle: die App wäre bedienbar und doch
+        // überall leer. Lieber ehrlich sagen, woran es liegt.
+        if (s.awaitingRole) return const _NoRoleScreen();
+        return const HomeScreen();
+      },
+    );
+  }
+}
+
+/// Ladezustand beim Start – bewusst schlicht und ohne Text, er ist meist nur
+/// Sekundenbruchteile zu sehen.
+class _StartingScreen extends StatelessWidget {
+  const _StartingScreen();
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        body: Center(child: CircularProgressIndicator(color: kAccent)),
+      );
+}
+
+/// Angemeldet, aber dem Konto wurde keine Rolle zugewiesen.
+class _NoRoleScreen extends StatelessWidget {
+  const _NoRoleScreen();
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.hourglass_empty, size: 48, color: kMuted),
+                  const SizedBox(height: 16),
+                  const Text('Noch keine Rolle zugewiesen',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 18, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Dein Konto ist angelegt, aber es fehlt die Zuordnung zu '
+                    'einer Rolle. Die Verwaltung kann sie eintragen.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: kMuted, height: 1.4),
+                  ),
+                  const SizedBox(height: 24),
+                  OutlinedButton(
+                    onPressed: () => Store.I.logout(),
+                    child: const Text('Abmelden'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -589,21 +741,60 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  String? userId;
-  final pin = TextEditingController();
+  final email = TextEditingController();
+  final password = TextEditingController();
   String? error;
+  bool busy = false;
+  bool showPassword = false;
 
   @override
-  void initState() {
-    super.initState();
-    if (Store.I.users.isNotEmpty) userId = Store.I.users.first.id;
+  void dispose() {
+    email.dispose();
+    password.dispose();
+    super.dispose();
   }
 
-  void _doLogin() {
-    if (userId == null) return;
-    if (!Store.I.login(userId!, pin.text.trim())) {
-      setState(() => error = 'PIN ist falsch.');
+  /// Anmelden. Bei Erfolg passiert hier nichts weiter – [RootGate] wechselt
+  /// den Bildschirm, sobald Firebase den neuen Zustand meldet.
+  Future<void> _doLogin() async {
+    if (busy) return;
+    if (email.text.trim().isEmpty || password.text.isEmpty) {
+      setState(() => error = 'Bitte E-Mail-Adresse und Passwort eingeben.');
+      return;
     }
+    setState(() {
+      busy = true;
+      error = null;
+    });
+    try {
+      await Store.I.auth
+          .signIn(email: email.text, password: password.text);
+    } on AuthFailure catch (e) {
+      if (mounted) setState(() => error = e.message);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> _resetPassword() async {
+    final adresse = email.text.trim();
+    if (adresse.isEmpty) {
+      setState(() => error =
+          'Bitte zuerst die E-Mail-Adresse eintragen, dann erneut tippen.');
+      return;
+    }
+    try {
+      await Store.I.auth.sendPasswordReset(adresse);
+      if (!mounted) return;
+      snack(context, 'E-Mail zum Zurücksetzen wurde an $adresse geschickt.');
+    } on AuthFailure catch (e) {
+      if (mounted) setState(() => error = e.message);
+    }
+  }
+
+  void _openSetup() {
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => const _SetupScreen()));
   }
 
   @override
@@ -656,31 +847,44 @@ class _LoginScreenState extends State<LoginScreen> {
                             style: TextStyle(
                                 fontSize: 16, fontWeight: FontWeight.w700)),
                         const SizedBox(height: 16),
-                        Text('Benutzer',
-                            style: TextStyle(color: kMuted, fontSize: 13)),
-                        const SizedBox(height: 6),
-                        DropdownButtonFormField<String>(
-                          initialValue: userId,
-                          dropdownColor: kCard2,
-                          isExpanded: true,
-                          items: Store.I.users
-                              .map((u) => DropdownMenuItem(
-                                  value: u.id,
-                                  child: Text('${u.name} — ${u.role}',
-                                      overflow: TextOverflow.ellipsis)))
-                              .toList(),
-                          onChanged: (v) => setState(() => userId = v),
-                        ),
-                        const SizedBox(height: 12),
-                        Text('PIN',
+                        Text('E-Mail',
                             style: TextStyle(color: kMuted, fontSize: 13)),
                         const SizedBox(height: 6),
                         TextField(
-                          controller: pin,
-                          obscureText: true,
-                          keyboardType: TextInputType.number,
+                          controller: email,
+                          enabled: !busy,
+                          keyboardType: TextInputType.emailAddress,
+                          autocorrect: false,
+                          autofillHints: const [AutofillHints.username],
+                          textInputAction: TextInputAction.next,
+                          decoration: const InputDecoration(
+                              hintText: 'name@betrieb.de'),
+                        ),
+                        const SizedBox(height: 12),
+                        Text('Passwort',
+                            style: TextStyle(color: kMuted, fontSize: 13)),
+                        const SizedBox(height: 6),
+                        TextField(
+                          controller: password,
+                          enabled: !busy,
+                          obscureText: !showPassword,
+                          autofillHints: const [AutofillHints.password],
+                          textInputAction: TextInputAction.done,
                           onSubmitted: (_) => _doLogin(),
-                          decoration: const InputDecoration(hintText: '••••'),
+                          decoration: InputDecoration(
+                            hintText: '••••••',
+                            // Auf der Baustelle wird mit Handschuhen getippt –
+                            // ohne Sichtbarkeitsschalter wird das mühsam.
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                  showPassword
+                                      ? Icons.visibility_off_outlined
+                                      : Icons.visibility_outlined,
+                                  color: kMuted),
+                              onPressed: () =>
+                                  setState(() => showPassword = !showPassword),
+                            ),
+                          ),
                         ),
                         if (error != null)
                           Padding(
@@ -695,40 +899,41 @@ class _LoginScreenState extends State<LoginScreen> {
                             style: FilledButton.styleFrom(
                                 backgroundColor: kAccent,
                                 foregroundColor: kAccentInk),
-                            onPressed: _doLogin,
-                            child: const Padding(
-                                padding: EdgeInsets.symmetric(vertical: 6),
-                                child: Text('Anmelden')),
+                            onPressed: busy ? null : _doLogin,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: busy
+                                  ? SizedBox(
+                                      height: 18,
+                                      width: 18,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2, color: kAccentInk),
+                                    )
+                                  : const Text('Anmelden'),
+                            ),
+                          ),
+                        ),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton(
+                            onPressed: busy ? null : _resetPassword,
+                            child: const Text('Passwort vergessen?'),
                           ),
                         ),
                       ],
                     ),
                   ),
                 ),
-                const SizedBox(height: 18),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                      color: kCard2,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: kLine)),
-                  child: Column(
-                    children: [
-                      Text('DEMO-ZUGÄNGE',
-                          style: TextStyle(
-                              color: kMuted,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: 1)),
-                      const SizedBox(height: 6),
-                      Text(
-                        'Administrator · 0000    Bauleiter · 1111    Büro · 2222',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                            color: kInk2, fontSize: 12.5, height: 1.5),
-                      ),
-                    ],
+                const SizedBox(height: 8),
+                // Nur für eine frische Installation gedacht. Steht bewusst
+                // sichtbar da: sonst findet niemand den Weg zum ersten Konto.
+                // Der Server lässt den Aufruf genau einmal zu.
+                Center(
+                  child: TextButton.icon(
+                    onPressed: busy ? null : _openSetup,
+                    icon: Icon(Icons.settings_outlined, size: 18, color: kMuted),
+                    label: Text('Ersteinrichtung',
+                        style: TextStyle(color: kMuted)),
                   ),
                 ),
               ],
@@ -736,6 +941,173 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Legt das erste Administrator-Konto an.
+///
+/// Nur bei einer frischen Installation nutzbar: der Server verweigert den
+/// Aufruf, sobald irgendwo ein Administrator existiert. Deshalb steht hier auch
+/// keine Rechteprüfung – zu diesem Zeitpunkt gibt es niemanden, der prüfen
+/// könnte.
+class _SetupScreen extends StatefulWidget {
+  const _SetupScreen();
+  @override
+  State<_SetupScreen> createState() => _SetupScreenState();
+}
+
+class _SetupScreenState extends State<_SetupScreen> {
+  final name = TextEditingController();
+  final email = TextEditingController();
+  final password = TextEditingController();
+  final repeat = TextEditingController();
+  String? error;
+  bool busy = false;
+
+  @override
+  void dispose() {
+    name.dispose();
+    email.dispose();
+    password.dispose();
+    repeat.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (busy) return;
+    if (name.text.trim().isEmpty || email.text.trim().isEmpty) {
+      setState(() => error = 'Name und E-Mail-Adresse werden gebraucht.');
+      return;
+    }
+    if (password.text.length < 6) {
+      setState(() => error = 'Das Passwort muss mindestens 6 Zeichen haben.');
+      return;
+    }
+    if (password.text != repeat.text) {
+      setState(() => error = 'Die beiden Passwörter stimmen nicht überein.');
+      return;
+    }
+
+    setState(() {
+      busy = true;
+      error = null;
+    });
+    try {
+      await Store.I.auth.bootstrapAdmin(
+        email: email.text,
+        password: password.text,
+        name: name.text,
+      );
+      // Das Konto steht auf dem Server – anmelden muss sich das Gerät noch
+      // selbst. Danach übernimmt RootGate.
+      await Store.I.auth.signIn(email: email.text, password: password.text);
+      if (mounted) Navigator.of(context).pop();
+    } on AuthFailure catch (e) {
+      if (mounted) setState(() => error = e.message);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Ersteinrichtung')),
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: ListView(
+              padding: const EdgeInsets.all(20),
+              shrinkWrap: true,
+              children: [
+                Text(
+                  'Hiermit wird das erste Administrator-Konto angelegt. '
+                  'Alle weiteren Benutzer legt danach die Verwaltung in der '
+                  'App an.',
+                  style: TextStyle(color: kMuted, height: 1.4),
+                ),
+                const SizedBox(height: 20),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _feld('Name', name,
+                            hint: 'Vor- und Nachname', enabled: !busy),
+                        const SizedBox(height: 12),
+                        _feld('E-Mail', email,
+                            hint: 'name@betrieb.de',
+                            enabled: !busy,
+                            typ: TextInputType.emailAddress),
+                        const SizedBox(height: 12),
+                        _feld('Passwort', password,
+                            hint: 'mindestens 6 Zeichen',
+                            enabled: !busy,
+                            geheim: true),
+                        const SizedBox(height: 12),
+                        _feld('Passwort wiederholen', repeat,
+                            enabled: !busy, geheim: true),
+                        if (error != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 12),
+                            child: Text(error!,
+                                style: TextStyle(color: kRed, fontSize: 13)),
+                          ),
+                        const SizedBox(height: 18),
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton(
+                            style: FilledButton.styleFrom(
+                                backgroundColor: kAccent,
+                                foregroundColor: kAccentInk),
+                            onPressed: busy ? null : _submit,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: busy
+                                  ? SizedBox(
+                                      height: 18,
+                                      width: 18,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2, color: kAccentInk),
+                                    )
+                                  : const Text('Konto anlegen'),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _feld(String label, TextEditingController c,
+      {String? hint,
+      bool geheim = false,
+      bool enabled = true,
+      TextInputType? typ}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: TextStyle(color: kMuted, fontSize: 13)),
+        const SizedBox(height: 6),
+        TextField(
+          controller: c,
+          enabled: enabled,
+          obscureText: geheim,
+          autocorrect: false,
+          keyboardType: typ,
+          decoration: InputDecoration(hintText: hint),
+        ),
+      ],
     );
   }
 }
@@ -2632,8 +3004,10 @@ class _AdminSectionScreen extends StatelessWidget {
                         title: Text(
                             '${u.name}${u.id == s.sessionId ? '  (du)' : ''}'),
                         subtitle: Text(
-                            '${u.role}${u.wage > 0 ? ' · ${eur(u.wage)}/h' : ''} · PIN ${u.pin}',
-                            style: TextStyle(color: kMuted)),
+                            '${u.role}${u.wage > 0 ? ' · ${eur(u.wage)}/h' : ''}'
+                            ' · ${u.hasAccount ? u.email : 'kein Zugang'}',
+                            style: TextStyle(
+                                color: u.hasAccount ? kMuted : kWarn)),
                         trailing: IconButton(
                           icon: Icon(Icons.delete_outline, color: kMuted),
                           onPressed: () => _delUser(context, u),
@@ -2725,9 +3099,19 @@ class _AdminSectionScreen extends StatelessWidget {
       return;
     }
     final ok = await confirm(context, 'Benutzer wirklich löschen?');
-    if (ok) {
-      Store.I.removeUser(u.id);
+    if (!ok) return;
+
+    // Erst das Konto, dann der lokale Datensatz. Andersherum bliebe bei einem
+    // Fehler ein Zugang bestehen, den niemand mehr in der Liste sieht.
+    if (u.hasAccount) {
+      try {
+        await Store.I.auth.deleteUser(u.id);
+      } on AuthFailure catch (e) {
+        if (context.mounted) snack(context, e.message);
+        return;
+      }
     }
+    Store.I.removeUser(u.id);
   }
 
   void _delRole(BuildContext context, String r) async {
@@ -2858,7 +3242,9 @@ Widget _pickField(String hint, String value, VoidCallback onTap) =>
       ),
     );
 
-Widget _saveBtn(String label, VoidCallback onTap) => Padding(
+/// Speichern-Knopf am Fuß eines Formulars. [onTap] darf null sein – dann ist
+/// der Knopf ausgegraut, etwa während ein Serveraufruf läuft.
+Widget _saveBtn(String label, VoidCallback? onTap) => Padding(
       padding: const EdgeInsets.only(top: 18),
       child: SizedBox(
         width: double.infinity,
@@ -3426,10 +3812,10 @@ void showProfileSheet(BuildContext context) {
           ListTile(
             onTap: () {
               Navigator.pop(ctx);
-              showPinForm(context);
+              showPasswordForm(context);
             },
-            leading: Icon(Icons.tune, color: kAccent),
-            title: const Text('PIN ändern'),
+            leading: Icon(Icons.key_outlined, color: kAccent),
+            title: const Text('Passwort ändern'),
             tileColor: kCard,
             shape:
                 RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -3467,33 +3853,84 @@ void showProfileSheet(BuildContext context) {
   });
 }
 
-void showPinForm(BuildContext context) {
-  final pin = TextEditingController();
+/// Eigenes Passwort ändern.
+///
+/// Läuft nicht über die Verwaltungs-Funktionen: das darf jeder für sich selbst,
+/// und die Bestätigung mit dem bisherigen Passwort erledigt Firebase.
+void showPasswordForm(BuildContext context) {
+  final alt = TextEditingController();
+  final neu = TextEditingController();
+  final wdh = TextEditingController();
+  String? fehler;
+  bool busy = false;
+
   _sheet(context, (ctx) {
-    return Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('PIN ändern',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-          _label('Neuer PIN (4-stellig)'),
-          TextField(
-              controller: pin,
-              keyboardType: TextInputType.number,
-              maxLength: 4,
-              decoration: const InputDecoration(hintText: '••••')),
-          _saveBtn('Speichern', () {
-            final v = pin.text.trim();
-            if (!RegExp(r'^\d{4}$').hasMatch(v)) {
-              snack(ctx, 'Bitte 4 Ziffern eingeben.');
-              return;
-            }
-            final me = Store.I.currentUser!;
-            me.pin = v;
-            Store.I.saveUser(me);
+    return StatefulBuilder(builder: (ctx, setSt) {
+      Future<void> speichern() async {
+        if (busy) return;
+        if (neu.text.length < 6) {
+          setSt(() => fehler = 'Das neue Passwort braucht mindestens 6 Zeichen.');
+          return;
+        }
+        if (neu.text != wdh.text) {
+          setSt(() => fehler = 'Die beiden Eingaben stimmen nicht überein.');
+          return;
+        }
+        setSt(() {
+          busy = true;
+          fehler = null;
+        });
+        try {
+          await Store.I.auth
+              .changeOwnPassword(current: alt.text, next: neu.text);
+          if (ctx.mounted) {
             Navigator.pop(ctx);
-          }),
-        ]);
+            snack(context, 'Passwort geändert.');
+          }
+        } on AuthFailure catch (e) {
+          setSt(() => fehler = e.message);
+        } finally {
+          setSt(() => busy = false);
+        }
+      }
+
+      return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Passwort ändern',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            _label('Bisheriges Passwort'),
+            TextField(
+                controller: alt,
+                enabled: !busy,
+                obscureText: true,
+                autocorrect: false,
+                decoration: const InputDecoration(hintText: '••••••')),
+            _label('Neues Passwort (mindestens 6 Zeichen)'),
+            TextField(
+                controller: neu,
+                enabled: !busy,
+                obscureText: true,
+                autocorrect: false,
+                decoration: const InputDecoration(hintText: '••••••')),
+            _label('Neues Passwort wiederholen'),
+            TextField(
+                controller: wdh,
+                enabled: !busy,
+                obscureText: true,
+                autocorrect: false,
+                decoration: const InputDecoration(hintText: '••••••')),
+            if (fehler != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child:
+                    Text(fehler!, style: TextStyle(color: kRed, fontSize: 13)),
+              ),
+            _saveBtn(busy ? 'Bitte warten …' : 'Speichern',
+                busy ? null : speichern),
+          ]);
+    });
   });
 }
 
@@ -4145,16 +4582,113 @@ void showRolePermsForm(BuildContext context, String role) {
 }
 
 // ---- Benutzer ----
+//
+// Anlegen und Rolle vergeben laufen über die Funktionen unter functions/ –
+// beides darf das Gerät nicht selbst tun (siehe auth/auth_repository.dart).
+// Der Stundenlohn bleibt dagegen rein betrieblich und wird nur lokal geführt.
 void showUserForm(BuildContext context, AppUser? u) {
   final name = TextEditingController(text: u?.name ?? '');
-  final pin = TextEditingController(text: u?.pin ?? '');
+  final email = TextEditingController(text: u?.email ?? '');
+  final password = TextEditingController();
   final wageCtrl = TextEditingController(
       text: (u != null && u.wage > 0) ? u.wage.toString() : '');
   final rollen = Store.I.roles;
   final showWage = Store.I.can('wages');
+
+  // Ein Benutzer aus der PIN-Zeit hat noch kein Konto. Für ihn ist dieses
+  // Formular dasselbe wie für einen neuen – nur dass Name, Rolle und
+  // Stundenlohn schon dastehen.
+  final neuesKonto = u == null || !u.hasAccount;
+
   String role = u?.role ?? (rollen.isNotEmpty ? rollen.first : kAdminRole);
+  String? fehler;
+  bool busy = false;
+
   _sheet(context, (ctx) {
     return StatefulBuilder(builder: (ctx, setSt) {
+      Future<void> speichern() async {
+        if (busy) return;
+        if (name.text.trim().isEmpty) {
+          setSt(() => fehler = 'Bitte einen Namen eingeben.');
+          return;
+        }
+        if (neuesKonto) {
+          if (email.text.trim().isEmpty) {
+            setSt(() => fehler = 'Für die Anmeldung wird eine E-Mail gebraucht.');
+            return;
+          }
+          if (password.text.length < 6) {
+            setSt(() =>
+                fehler = 'Das Passwort muss mindestens 6 Zeichen haben.');
+            return;
+          }
+        } else if (password.text.isNotEmpty && password.text.length < 6) {
+          setSt(() => fehler = 'Das Passwort muss mindestens 6 Zeichen haben.');
+          return;
+        }
+
+        final w = showWage
+            ? (double.tryParse(wageCtrl.text.trim().replaceAll(',', '.')) ?? 0)
+            : null;
+
+        setSt(() {
+          busy = true;
+          fehler = null;
+        });
+        try {
+          if (neuesKonto) {
+            final konto = await Store.I.auth.createUser(
+              email: email.text,
+              password: password.text,
+              name: name.text,
+              role: role,
+            );
+            if (u != null) {
+              // Vorhandenen Datensatz übernehmen. Die Kennung wechselt dabei
+              // auf die des Kontos – daran hängen ab jetzt Zeiterfassung und
+              // Rechte. Früher automatisch erfasste Zeiten dieses Benutzers
+              // bleiben unter der alten Kennung stehen; die Stunden an den
+              // Aufträgen sind davon nicht betroffen, die tragen den Namen.
+              Store.I.removeUser(u.id);
+              u.id = konto.uid;
+              u.name = name.text.trim();
+              u.email = konto.email;
+              u.role = role;
+              u.pin = '';
+              if (w != null) u.wage = w;
+              Store.I.users.add(u);
+              Store.I.saveUser(u);
+            } else {
+              final neu = AppUser(
+                id: konto.uid,
+                name: name.text.trim(),
+                role: role,
+                email: konto.email,
+                wage: w ?? 0,
+              );
+              Store.I.users.add(neu);
+              Store.I.saveUser(neu);
+            }
+          } else {
+            await Store.I.auth.updateUser(
+              uid: u.id,
+              name: name.text,
+              password: password.text.isEmpty ? null : password.text,
+              role: role == u.role ? null : role,
+            );
+            u.name = name.text.trim();
+            u.role = role;
+            if (w != null) u.wage = w;
+            Store.I.saveUser(u);
+          }
+          if (ctx.mounted) Navigator.pop(ctx);
+        } on AuthFailure catch (e) {
+          setSt(() => fehler = e.message);
+        } finally {
+          setSt(() => busy = false);
+        }
+      }
+
       return Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -4162,11 +4696,40 @@ void showUserForm(BuildContext context, AppUser? u) {
             Text(u == null ? 'Neuer Benutzer' : 'Benutzer bearbeiten',
                 style:
                     const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            if (u != null && !u.hasAccount)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  'Dieser Benutzer stammt noch aus der PIN-Zeit und kann sich '
+                  'nicht anmelden. Hier bekommt er einen Zugang.',
+                  style: TextStyle(color: kMuted, fontSize: 13, height: 1.35),
+                ),
+              ),
             _label('Name'),
             TextField(
                 controller: name,
+                enabled: !busy,
                 decoration:
                     const InputDecoration(hintText: 'z. B. Anna Bauer')),
+            _label('E-Mail'),
+            TextField(
+              controller: email,
+              // Die Anmeldeadresse ist die Kennung des Kontos und wird hier
+              // nicht geändert – dafür bräuchte es einen Bestätigungsweg.
+              enabled: !busy && neuesKonto,
+              keyboardType: TextInputType.emailAddress,
+              autocorrect: false,
+              decoration: const InputDecoration(hintText: 'name@betrieb.de'),
+            ),
+            _label(neuesKonto
+                ? 'Passwort (mindestens 6 Zeichen)'
+                : 'Neues Passwort (leer lassen = unverändert)'),
+            TextField(
+                controller: password,
+                enabled: !busy,
+                obscureText: true,
+                autocorrect: false,
+                decoration: const InputDecoration(hintText: '••••••')),
             _label('Rolle'),
             DropdownButtonFormField<String>(
               initialValue: role,
@@ -4174,52 +4737,26 @@ void showUserForm(BuildContext context, AppUser? u) {
               items: {...rollen, role}
                   .map((r) => DropdownMenuItem(value: r, child: Text(r)))
                   .toList(),
-              onChanged: (v) => setSt(() => role = v!),
+              onChanged: busy ? null : (v) => setSt(() => role = v!),
             ),
-            _label('PIN (4-stellig)'),
-            TextField(
-                controller: pin,
-                keyboardType: TextInputType.number,
-                maxLength: 4),
             if (showWage) ...[
               _label('Stundenlohn (€/h)'),
               TextField(
                   controller: wageCtrl,
+                  enabled: !busy,
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
                   decoration: const InputDecoration(
                       hintText: 'z. B. 45 – leer = nicht hinterlegt')),
             ],
-            _saveBtn('Speichern', () {
-              if (name.text.trim().isEmpty) return;
-              if (!RegExp(r'^\d{4}$').hasMatch(pin.text.trim())) {
-                snack(ctx, 'Bitte einen 4-stelligen PIN eingeben.');
-                return;
-              }
-              final w = showWage
-                  ? (double.tryParse(
-                          wageCtrl.text.trim().replaceAll(',', '.')) ??
-                      0)
-                  : null;
-              final AppUser benutzer;
-              if (u != null) {
-                u.name = name.text.trim();
-                u.role = role;
-                u.pin = pin.text.trim();
-                if (w != null) u.wage = w;
-                benutzer = u;
-              } else {
-                benutzer = AppUser(
-                    id: uid(),
-                    name: name.text.trim(),
-                    role: role,
-                    pin: pin.text.trim(),
-                    wage: w ?? 0);
-                Store.I.users.add(benutzer);
-              }
-              Store.I.saveUser(benutzer);
-              Navigator.pop(ctx);
-            }),
+            if (fehler != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child:
+                    Text(fehler!, style: TextStyle(color: kRed, fontSize: 13)),
+              ),
+            _saveBtn(busy ? 'Bitte warten …' : 'Speichern',
+                busy ? null : speichern),
           ]);
     });
   });

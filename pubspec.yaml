@@ -38,10 +38,17 @@ dependencies:
   geocoding: ^5.0.0
 
   # ---- Backend (Firebase-Projekt baudoc-c54a9) ----
-  # Nur die Grundverbindung. Anmeldung, Datenbank und Dateiablage kommen in
-  # eigenen Schritten dazu – siehe die Zugangsdaten in lib/firebase_options.dart
-  # (enthält keine Geheimnisse und gehört bewusst ins Repository).
+  # Die Grundverbindung. Datenbank und Dateiablage kommen in eigenen Schritten
+  # dazu – siehe die Zugangsdaten in lib/firebase_options.dart (enthält keine
+  # Geheimnisse und gehört bewusst ins Repository).
   firebase_core: ^4.13.0
+  # Anmeldung mit E-Mail und Passwort. Hält die Sitzung selbst über
+  # Neustarts hinweg – deshalb muss sich niemand täglich neu anmelden.
+  firebase_auth: ^6.4.0
+  # Ruft die Funktionen unter functions/ auf. Benutzer *anlegen* muss auf dem
+  # Server passieren: täte es die App selbst, würde das Gerät sofort als der
+  # neue Benutzer angemeldet und der Administrator wäre draußen.
+  cloud_functions: ^6.1.0
 
 dev_dependencies:
   flutter_test:

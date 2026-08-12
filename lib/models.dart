@@ -53,21 +53,46 @@ String today() => DateTime.now().toIso8601String().substring(0, 10);
 
 // ---------- Modelle ----------
 class AppUser {
-  String id, name, role, pin;
+  /// Bei Konten aus Firebase ist das die Auth-Kennung (uid), bei Altbestand die
+  /// früher vergebene laufende Nummer.
+  String id;
+  String name, role;
+
+  /// Anmeldename. Leer bei Benutzern aus der Zeit vor der Kontoanmeldung –
+  /// daran erkennt die Verwaltung, für wen noch ein Konto fehlt.
+  String email;
+
+  /// Alter PIN-Zugang. Wird nicht mehr zur Anmeldung benutzt; das Feld bleibt,
+  /// damit vorhandene Datenstände unverändert lesbar bleiben, und fällt mit dem
+  /// Umzug der Benutzer nach Firestore weg.
+  String pin;
+
   double wage; // Stundenlohn €/h (0 = nicht hinterlegt)
   AppUser(
       {required this.id,
       required this.name,
       required this.role,
-      required this.pin,
+      this.email = '',
+      this.pin = '',
       this.wage = 0});
-  Map<String, dynamic> toJson() =>
-      {'id': id, 'name': name, 'role': role, 'pin': pin, 'wage': wage};
+
+  /// Kann sich dieser Benutzer anmelden?
+  bool get hasAccount => email.isNotEmpty;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'role': role,
+        'email': email,
+        'pin': pin,
+        'wage': wage,
+      };
   factory AppUser.fromJson(Map<String, dynamic> j) => AppUser(
       id: j['id'],
       name: j['name'],
       role: j['role'],
-      pin: j['pin'],
+      email: j['email'] ?? '',
+      pin: j['pin'] ?? '',
       wage: (j['wage'] as num?)?.toDouble() ?? 0);
 }
 

@@ -1,0 +1,5 @@
+node_modules/
+*.log
+.env
+# Dienstkonto-Schlüssel dürfen niemals ins Repository.
+*serviceAccount*.json
