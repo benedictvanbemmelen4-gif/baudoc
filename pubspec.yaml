@@ -49,11 +49,18 @@ dependencies:
   # Server passieren: täte es die App selbst, würde das Gerät sofort als der
   # neue Benutzer angemeldet und der Administrator wäre draußen.
   cloud_functions: ^6.1.0
+  # Die gemeinsame Datenbank. Bringt lokale Zwischenspeicherung und das
+  # Nachreichen offline entstandener Änderungen mit – deshalb braucht BauDoc
+  # keine eigene Synchronisierung.
+  cloud_firestore: ^6.1.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+  # Firestore-Nachbau für Tests: die Umsetzung lässt sich damit prüfen, ohne
+  # dass ein Projekt im Netz nötig wäre.
+  fake_cloud_firestore: ^4.0.0
 
 flutter:
   uses-material-design: true

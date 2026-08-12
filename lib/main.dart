@@ -20,6 +20,7 @@ import 'models.dart';
 
 // Speicherung der Stammdaten hinter einem Vertrag (lib/data/).
 import 'data/master_data_repository.dart';
+import 'data/firestore_master_data_repository.dart';
 import 'data/prefs_master_data_repository.dart';
 
 // Plattform-spezifischer Datei-Export (Web-Download vs. Teilen-Dialog).
@@ -113,9 +114,27 @@ class Store extends ChangeNotifier {
   static final Store I = Store._();
   Store._();
 
-  /// Die Speicherung. Heute SharedPreferences, ab Schritt 4 wahlweise
-  /// Firestore – hier wird dann eine Zeile getauscht, sonst nichts.
-  final MasterDataRepository _repo = PrefsMasterDataRepository();
+  /// Die Speicherung auf dem Gerät.
+  ///
+  /// Bis zur Anmeldung die einzige: die Regeln der Datenbank weisen
+  /// unangemeldete Zugriffe ab, und die App muss trotzdem starten können. Sie
+  /// bleibt danach bestehen – aus ihr stammt der Bestand, der beim allerersten
+  /// Anmelden in die gemeinsame Datenbank übernommen wird.
+  final PrefsMasterDataRepository _lokal = PrefsMasterDataRepository();
+
+  /// Wohin gerade geschrieben wird. `late`, damit hier auf [_lokal] verwiesen
+  /// werden kann; mit der Anmeldung übernimmt Firestore ([_verbindeBackend]).
+  late MasterDataRepository _repo = _lokal;
+
+  FirestoreMasterDataRepository? _backend;
+
+  /// Baut die gemeinsame Datenbank. Als Feld, damit ein Test einen
+  /// Firestore-Nachbau einsetzen kann, ohne dass Firebase laufen muss.
+  FirestoreMasterDataRepository Function() backendBuilder =
+      FirestoreMasterDataRepository.new;
+
+  /// Läuft die gemeinsame Datenbank?
+  bool get backendAktiv => _backend != null;
 
   /// Die Anmeldung.
   ///
@@ -282,11 +301,15 @@ class Store extends ChangeNotifier {
 
     if (account == null) {
       sessionId = null;
+      _loeseBackend();
       notifyListeners();
       return;
     }
 
     sessionId = account.uid;
+    // Jetzt darf die App an die Datenbank – vorher weisen die Regeln sie ab.
+    _verbindeBackend();
+
     final name = account.name.trim().isNotEmpty
         ? account.name.trim()
         : account.email.split('@').first;
@@ -318,6 +341,51 @@ class Store extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ---------------------------------------------------------------------
+  // Gemeinsame Datenbank
+  // ---------------------------------------------------------------------
+
+  /// Schaltet die Speicherung auf Firestore um.
+  ///
+  /// Nicht abgewartet: die App zeigt derweil den lokalen Bestand. Ist die
+  /// Datenbank noch leer, wird genau dieser Bestand hochgeladen – das ist die
+  /// einmalige Übernahme, die den bisherigen Stand des Geräts zum Ausgangspunkt
+  /// für alle macht. Wer als Zweiter dazukommt, findet die Daten bereits vor
+  /// und übernimmt sie.
+  Future<void> _verbindeBackend() async {
+    if (_backend != null) return;
+    try {
+      final backend = backendBuilder();
+      await backend.init();
+      backend.onRemoteChange = notifyListeners;
+
+      final vorhanden = await backend.load();
+      if (vorhanden == null) {
+        await backend.replaceAll(_data);
+      } else {
+        _data = vorhanden;
+      }
+
+      _backend = backend;
+      _repo = backend;
+      notifyListeners();
+    } catch (e, st) {
+      // Kein Netz, keine Rechte, kaputte Konfiguration: dann bleibt es beim
+      // Gerätespeicher. Arbeiten kann der Monteur trotzdem.
+      debugPrint('Datenbank nicht erreichbar, bleibe lokal: $e\n$st');
+    }
+  }
+
+  /// Zurück auf den Gerätespeicher – beim Abmelden.
+  ///
+  /// Die Zuhörer müssen weg, sonst laufen sie ohne Anmeldung weiter und die
+  /// Regeln weisen sie mit Fehlern ab.
+  void _loeseBackend() {
+    _backend?.dispose();
+    _backend = null;
+    _repo = _lokal;
+  }
+
   /// Eine vom Server vergebene Rolle kann in dieser Installation unbekannt
   /// sein. Dann wird sie aufgenommen, damit Rechte-Ansicht und Auswahllisten
   /// sie zeigen.
@@ -340,6 +408,18 @@ class Store extends ChangeNotifier {
 
   void saveProject(Project p) => _write(_repo.saveProject(p));
   void removeProject(String id) => _write(_repo.deleteProject(id));
+
+  /// Eine einzelne Stundenzeile. Die Liste im Auftrag hat der Aufrufer bereits
+  /// geändert – hier wird nur festgehalten, *welche* Zeile es war.
+  ///
+  /// Warum nicht einfach [saveProject]: die Zeiterfassung des Monteurs schreibt
+  /// Stunden, während das Büro womöglich denselben Auftrag bearbeitet. Über den
+  /// ganzen Auftrag zu speichern hieße, die Zeile des anderen zu überschreiben.
+  void saveWorkHours(String projectId, WorkHours row) =>
+      _write(_repo.saveWorkHours(projectId, row));
+
+  void removeWorkHours(String projectId, String rowId) =>
+      _write(_repo.deleteWorkHours(projectId, rowId));
 
   void saveCustomer(Customer c) => _write(_repo.saveCustomer(c));
   void removeCustomer(String id) => _write(_repo.deleteCustomer(id));
@@ -2568,7 +2648,7 @@ class HoursScreen extends StatelessWidget {
                                         color: kMuted),
                                     onPressed: () {
                                       p.hours.removeWhere((x) => x.id == h.id);
-                                      Store.I.saveProject(p);
+                                      Store.I.removeWorkHours(p.id, h.id);
                                     },
                                   ),
                                 ))
@@ -4127,14 +4207,15 @@ void showHoursForm(BuildContext context, Project p) {
                 controller: task,
                 decoration: const InputDecoration(hintText: 'z. B. Mauern EG')),
             _saveBtn('Speichern', () {
-              p.hours.add(WorkHours(
+              final zeile = WorkHours(
                   id: uid(),
                   worker: worker,
                   date: today(),
                   task: task.text.trim(),
                   h: double.tryParse(hrs.text.replaceAll(',', '.')) ?? 0,
-                  synced: Store.I.online));
-              Store.I.saveProject(p);
+                  synced: Store.I.online);
+              p.hours.add(zeile);
+              Store.I.saveWorkHours(p.id, zeile);
               Navigator.pop(ctx);
             }),
           ]);

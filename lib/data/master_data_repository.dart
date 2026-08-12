@@ -120,14 +120,35 @@ abstract class MasterDataRepository {
   /// Muss vor jeder anderen Nutzung aufgerufen werden.
   Future<void> init();
 
+  /// Meldet Änderungen, die **von außen** kommen – vom Büro, vom Gerät eines
+  /// Kollegen. Die Umsetzung ändert dabei den bereits übergebenen [MasterData]
+  /// an Ort und Stelle und ruft danach diesen Rückmelder, damit die Oberfläche
+  /// sich auffrischt.
+  ///
+  /// Die SharedPreferences-Umsetzung ruft ihn nie: dort gibt es kein Außen.
+  set onRemoteChange(void Function() rueckmelder);
+
   /// Gespeicherten Bestand laden – null, wenn noch nie etwas gespeichert
   /// wurde oder die Daten unlesbar sind. In beiden Fällen befüllt der Aufrufer
   /// neu und ruft [replaceAll].
   Future<MasterData?> load();
 
   /// Einen Auftrag anlegen oder ersetzen (erkannt an der Id).
+  ///
+  /// Betrifft die Kopfdaten und die Listen, die üblicherweise eine Person
+  /// bearbeitet (Material, Aufgaben, Notizen, Mängel). **Nicht** die Stunden –
+  /// die haben eigene Operationen, siehe [saveWorkHours].
   Future<void> saveProject(Project project);
   Future<void> deleteProject(String id);
+
+  /// Eine einzelne Stundenzeile schreiben.
+  ///
+  /// Bewusst getrennt vom Auftrag: die Zeiterfassung des Monteurs schreibt
+  /// Stunden, während das Büro womöglich denselben Auftrag bearbeitet. Ginge
+  /// beides über [saveProject], überschriebe der spätere Schreibvorgang die
+  /// Zeile des anderen – und das wären abrechenbare Stunden.
+  Future<void> saveWorkHours(String projectId, WorkHours row);
+  Future<void> deleteWorkHours(String projectId, String rowId);
 
   Future<void> saveCustomer(Customer customer);
   Future<void> deleteCustomer(String id);

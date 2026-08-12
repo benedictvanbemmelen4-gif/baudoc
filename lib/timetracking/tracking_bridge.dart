@@ -97,7 +97,7 @@ void _writeToWorkHours(TimeEntry entry) {
   if (entry.status == TimeEntryStatus.rejected || hours <= 0) {
     if (existing >= 0) {
       p.hours.removeAt(existing);
-      Store.I.saveProject(p);
+      Store.I.removeWorkHours(p.id, rowId);
     }
     return;
   }
@@ -118,7 +118,10 @@ void _writeToWorkHours(TimeEntry entry) {
   } else {
     p.hours.add(row);
   }
-  Store.I.saveProject(p);
+  // Nur diese eine Zeile schreiben, nicht den ganzen Auftrag: das Büro kann
+  // gerade an demselben Auftrag arbeiten, und dessen Änderung darf nicht
+  // verloren gehen (siehe Store.saveWorkHours).
+  Store.I.saveWorkHours(p.id, row);
 }
 
 String _workerName(String userId) {

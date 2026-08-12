@@ -1,0 +1,176 @@
+rules_version = '2';
+
+// Serverseitige Rechteprüfung für BauDoc.
+//
+// Bisher war `Store.can()` in der App reine Kosmetik: sie blendete Knöpfe aus,
+// aber wer an die Daten kam, konnte alles. Mit einer Datenbank im Netz zählt
+// nur noch, was hier steht – alles andere lässt sich mit ein paar Zeilen
+// Skript umgehen.
+//
+// Die Rolle kommt aus dem Anmelde-Token (Custom Claim), gesetzt von
+// functions/index.js. Die Rechte je Rolle stehen in `roles/{rolle}` und
+// entsprechen den Schlüsseln aus kPerms (lib/models.dart) – ändert sich dort
+// etwas, muss es hier nicht angefasst werden.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // -----------------------------------------------------------------
+    // Grundlagen
+    // -----------------------------------------------------------------
+
+    function angemeldet() {
+      return request.auth != null;
+    }
+
+    function rolle() {
+      return request.auth.token.role;
+    }
+
+    function istAdmin() {
+      return angemeldet() && rolle() == 'Administrator';
+    }
+
+    /// Hat der Aufrufer das Recht [recht]?
+    ///
+    /// Der Administrator darf immer alles – genau wie in Store.can(). Für alle
+    /// anderen wird der Rechte-Eintrag der Rolle gelesen. Fehlt er, gilt: nein.
+    function darf(recht) {
+      return istAdmin() || (
+        angemeldet()
+        && exists(/databases/$(database)/documents/roles/$(rolle()))
+        && recht in get(/databases/$(database)/documents/roles/$(rolle())).data.perms
+      );
+    }
+
+    // -----------------------------------------------------------------
+    // Rollen und Rechte
+    // -----------------------------------------------------------------
+
+    // Jeder Angemeldete muss die Rollen lesen dürfen – sonst könnte `darf()`
+    // oben seine eigene Prüfung nicht durchführen. Geändert werden dürfen sie
+    // nur mit dem Recht dafür.
+    match /roles/{rolle} {
+      allow read: if angemeldet();
+      allow write: if darf('usersRoles');
+    }
+
+    // -----------------------------------------------------------------
+    // Benutzer
+    // -----------------------------------------------------------------
+
+    // Namen müssen alle lesen können: an Stundenzeilen und erfassten Zeiten
+    // hängt der Name des Mitarbeiters.
+    //
+    // Den eigenen Eintrag darf jeder schreiben – die App legt ihn beim ersten
+    // Anmelden an. Ein dort eingetragenes `role`-Feld ist dabei ohne Belang:
+    // maßgeblich ist ausschließlich der Claim im Token, und den setzt nur der
+    // Server.
+    match /users/{uid} {
+      allow read: if angemeldet();
+      allow write: if darf('usersRoles') || request.auth.uid == uid;
+    }
+
+    // Stundenlöhne stehen bewusst getrennt von den Benutzern.
+    //
+    // Firestore kann Rechte nur je Dokument vergeben, nicht je Feld. Läge der
+    // Lohn im Benutzer-Dokument, könnte ihn jeder lesen, der die Namen liest –
+    // also jeder. Als eigene Sammlung bleibt er den Berechtigten vorbehalten.
+    match /wages/{uid} {
+      allow read, write: if darf('wages');
+    }
+
+    // -----------------------------------------------------------------
+    // Stammdaten
+    // -----------------------------------------------------------------
+
+    match /catalog/{id} {
+      allow read: if angemeldet();
+      allow write: if darf('materialPrices');
+    }
+
+    match /pauschalen/{id} {
+      allow read: if angemeldet();
+      allow write: if darf('pauschalen');
+    }
+
+    match /customers/{id} {
+      allow read: if angemeldet();
+      allow write: if darf('editProjects');
+    }
+
+    // Kategorien/Gewerke – eine einzelne Liste.
+    match /settings/{dokument} {
+      allow read: if angemeldet();
+      allow write: if darf('categories');
+    }
+
+    // -----------------------------------------------------------------
+    // Aufträge
+    // -----------------------------------------------------------------
+
+    match /projects/{id} {
+      allow read: if angemeldet();
+      allow create, update: if darf('editProjects');
+      allow delete: if darf('deleteProjects');
+
+      // Stundenzeilen als eigene Dokumente, nicht als Liste im Auftrag.
+      //
+      // Der Grund ist nicht die Größe, sondern der gleichzeitige Zugriff:
+      // schreibt die Zeiterfassung des Monteurs den ganzen Auftrag und das
+      // Büro tut im selben Moment dasselbe, verliert einer von beiden seine
+      // Änderung – und das wären abrechenbare Stunden.
+      //
+      // Schreiben darf hier jeder Angemeldete: Stunden zu erfassen ist die
+      // Kernaufgabe des Monteurs, dafür braucht er keine Sonderrechte.
+      match /hours/{zeile} {
+        allow read: if angemeldet();
+        allow write: if angemeldet();
+      }
+
+      // Fotos ebenfalls einzeln – ein Auftragsdokument darf 1 MB groß sein,
+      // ein einzelnes Foto passt hinein, zehn nicht.
+      match /photos/{foto} {
+        allow read: if angemeldet();
+        allow write: if darf('editProjects');
+      }
+    }
+
+    // Sammlungsübergreifende Abfragen.
+    //
+    // Die App holt alle Stunden und Fotos mit je *einer* Abfrage über alle
+    // Aufträge hinweg, statt mit zwei Abfragen pro Auftrag. Firestore prüft
+    // solche Abfragen aber **nicht** gegen die verschachtelten Regeln oben –
+    // ohne diesen Eintrag werden sie abgewiesen, und die App startet leer.
+    match /{pfad=**}/hours/{zeile} {
+      allow read: if angemeldet();
+    }
+    match /{pfad=**}/photos/{foto} {
+      allow read: if angemeldet();
+    }
+
+    // -----------------------------------------------------------------
+    // Zeiterfassung (Schritt 6)
+    // -----------------------------------------------------------------
+
+    // Seine eigenen Zeiten verwaltet jeder selbst. Lesen darf sie zusätzlich,
+    // wer Auswertungen erstellt – der Stundenzettel geht über alle Mitarbeiter.
+    match /timeEntries/{id} {
+      allow read: if angemeldet();
+      allow create: if angemeldet() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if angemeldet() && (
+        resource.data.userId == request.auth.uid || darf('exportDocs')
+      );
+    }
+
+    // -----------------------------------------------------------------
+    // Alles Übrige ist verboten.
+    //
+    // Ohne diese Regel wäre eine künftig hinzugefügte Sammlung offen, weil
+    // niemand daran denkt, sie hier einzutragen. So fällt es sofort auf.
+    // -----------------------------------------------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

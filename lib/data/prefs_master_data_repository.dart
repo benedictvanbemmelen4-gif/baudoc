@@ -27,6 +27,11 @@ class PrefsMasterDataRepository implements MasterDataRepository {
   /// die Änderung *im* Objekt hat die Oberfläche schon vorgenommen.
   MasterData? _data;
 
+  /// Wird hier nie gerufen: eine Datei auf dem Gerät ändert sich nicht von
+  /// selbst. Der Setzer existiert nur, weil der Vertrag ihn verlangt.
+  @override
+  set onRemoteChange(void Function() rueckmelder) {}
+
   @override
   Future<void> init() async {
     _p = await SharedPreferences.getInstance();
@@ -69,6 +74,37 @@ class PrefsMasterDataRepository implements MasterDataRepository {
   @override
   Future<void> deleteProject(String id) =>
       _remove(_data?.projects, (p) => p.id, id);
+
+  /// Hier liegen die Stunden weiterhin im Auftrag – bei *einem* JSON-Text gibt
+  /// es nichts zu trennen. Die eigene Operation ist trotzdem richtig: sie sagt
+  /// dem Backend, was sich wirklich geändert hat.
+  @override
+  Future<void> saveWorkHours(String projectId, WorkHours row) async {
+    final p = _projekt(projectId);
+    if (p == null) return;
+    final i = p.hours.indexWhere((h) => h.id == row.id);
+    if (i >= 0) {
+      p.hours[i] = row;
+    } else {
+      p.hours.add(row);
+    }
+    await _write();
+  }
+
+  @override
+  Future<void> deleteWorkHours(String projectId, String rowId) async {
+    final p = _projekt(projectId);
+    if (p == null) return;
+    p.hours.removeWhere((h) => h.id == rowId);
+    await _write();
+  }
+
+  Project? _projekt(String id) {
+    for (final p in _data?.projects ?? const <Project>[]) {
+      if (p.id == id) return p;
+    }
+    return null;
+  }
 
   @override
   Future<void> saveCustomer(Customer customer) =>
