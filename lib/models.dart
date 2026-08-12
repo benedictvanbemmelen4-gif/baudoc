@@ -140,54 +140,50 @@ class Customer {
       contact: j['contact'] ?? '');
 }
 
+// Zum früher hier stehenden Feld `synced`: es stand in jeder Stunden- und
+// Materialzeile, wurde beim Anlegen einmal gesetzt und danach nie wieder
+// angefasst – die Anzeige „nicht synchronisiert" konnte also nichts Wahres
+// melden. Den Übertragungsstand kennt jetzt die Datenbank selbst: Firestore
+// meldet ausstehende Schreibvorgänge. Er wird deshalb nicht mehr in der Zeile
+// mitgespeichert, sondern erfragt (MasterDataRepository.pendingIn). Alte
+// Datenstände dürfen das Feld weiterhin enthalten, es wird beim Lesen ignoriert.
+
 class WorkHours {
   String id, worker, date, task;
   double h;
-  bool synced;
   WorkHours(
       {required this.id,
       required this.worker,
       required this.date,
       required this.task,
-      required this.h,
-      required this.synced});
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'worker': worker,
-        'date': date,
-        'task': task,
-        'h': h,
-        'synced': synced
-      };
+      required this.h});
+  Map<String, dynamic> toJson() =>
+      {'id': id, 'worker': worker, 'date': date, 'task': task, 'h': h};
   factory WorkHours.fromJson(Map<String, dynamic> j) => WorkHours(
       id: j['id'],
       worker: j['worker'],
       date: j['date'],
       task: j['task'] ?? '',
-      h: (j['h'] as num).toDouble(),
-      synced: j['synced'] ?? true);
+      h: (j['h'] as num).toDouble());
 }
 
 class MaterialItem {
   String id, name, unit, date;
   double qty, price;
-  bool synced;
   MaterialItem(
       {required this.id,
       required this.name,
       required this.unit,
       required this.date,
       required this.qty,
-      required this.price,
-      required this.synced});
+      required this.price});
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
         'unit': unit,
         'date': date,
         'qty': qty,
-        'price': price,
-        'synced': synced
+        'price': price
       };
   factory MaterialItem.fromJson(Map<String, dynamic> j) => MaterialItem(
       id: j['id'],
@@ -195,8 +191,7 @@ class MaterialItem {
       unit: j['unit'],
       date: j['date'] ?? '',
       qty: (j['qty'] as num).toDouble(),
-      price: (j['price'] as num).toDouble(),
-      synced: j['synced'] ?? true);
+      price: (j['price'] as num).toDouble());
 }
 
 class Task {

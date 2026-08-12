@@ -23,7 +23,6 @@ WorkHours h(String date, String worker, double hours,
       date: date,
       task: task,
       h: hours,
-      synced: true,
     );
 
 Project project(String name, List<WorkHours> hours, {String type = 'Rohbau'}) =>

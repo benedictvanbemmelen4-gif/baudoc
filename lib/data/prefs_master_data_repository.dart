@@ -32,6 +32,14 @@ class PrefsMasterDataRepository implements MasterDataRepository {
   @override
   set onRemoteChange(void Function() rueckmelder) {}
 
+  /// Auf dem Gerät wartet nichts: `setString` ist zurück, wenn es geschrieben
+  /// ist. Ein „nicht übertragen" gibt es hier schlicht nicht.
+  @override
+  int pendingIn(String projectId) => 0;
+
+  @override
+  bool get hasPendingWrites => false;
+
   @override
   Future<void> init() async {
     _p = await SharedPreferences.getInstance();

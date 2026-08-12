@@ -29,6 +29,9 @@ class FakeRepository implements TrackingRepository {
   Future<void> init() async {}
 
   @override
+  set onRemoteChange(void Function() rueckmelder) {}
+
+  @override
   Future<TrackingSession?> loadSession() async => session;
 
   @override
@@ -174,6 +177,9 @@ void main() {
   /// Aufträge, die es nicht (mehr) gibt – gelöscht oder mit neuer ID.
   late Set<String> missingOrders;
 
+  /// Darf der Angemeldete auch fremde Zeiten prüfen (Büro/Meister)?
+  late bool darfFremdePruefen;
+
   TimeTrackingController build() => TimeTrackingController(
         repository: repo,
         geofence: geo,
@@ -184,6 +190,7 @@ void main() {
             : TrackedOrder(
                 id: id, name: 'Baustelle $id', address: 'Musterweg 1'),
         onEntryCompleted: completed.add,
+        canReviewOthers: () => darfFremdePruefen,
       );
 
   setUp(() async {
@@ -192,6 +199,7 @@ void main() {
     push = FakeNotifications();
     completed = [];
     missingOrders = {};
+    darfFremdePruefen = true;
     c = build();
     await c.init();
   });
@@ -382,6 +390,39 @@ void main() {
       expect(completed.last.status, TimeEntryStatus.confirmed);
       expect(completed.last.id, completed.first.id,
           reason: 'gleiche ID → die Übernahme bleibt idempotent');
+    });
+  });
+
+  group('Prüfliste', () {
+    /// Zwei unbestätigte Zeiten im Journal – eine eigene, eine vom Kollegen.
+    /// So spielt die gemeinsame Ablage sie auf jedes Gerät.
+    Future<void> journalMitBeiden() async {
+      for (final (id, wer) in [('tt_eigen', 'u1'), ('tt_fremd', 'u2')]) {
+        await repo.appendEntry(TimeEntry(
+          id: id,
+          orderId: 'a1',
+          userId: wer,
+          startTime: DateTime(2026, 8, 12, 7),
+          endTime: DateTime(2026, 8, 12, 15),
+        ));
+      }
+      c = build();
+      await c.init();
+    }
+
+    test('das Büro sieht auch die Zeiten der anderen', () async {
+      darfFremdePruefen = true;
+      await journalMitBeiden();
+      expect(c.entriesNeedingReview.map((e) => e.id),
+          containsAll(['tt_eigen', 'tt_fremd']));
+    });
+
+    test('der Monteur sieht nur seine eigenen', () async {
+      // Seit die Zeiten gemeinsam liegen, kennt sein Gerät auch die fremden.
+      // Bestätigen könnte er sie ohnehin nicht – der Server lässt es nicht zu.
+      darfFremdePruefen = false;
+      await journalMitBeiden();
+      expect(c.entriesNeedingReview.map((e) => e.id), ['tt_eigen']);
     });
   });
 

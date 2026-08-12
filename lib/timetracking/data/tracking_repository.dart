@@ -12,6 +12,13 @@ abstract class TrackingRepository {
   /// Muss vor jeder anderen Nutzung aufgerufen werden.
   Future<void> init();
 
+  /// Meldet Einträge, die **von außen** kommen: der Kollege erfasst eine Zeit,
+  /// das Büro korrigiert einen Eintrag. Der Controller lädt daraufhin neu und
+  /// weckt die Oberfläche.
+  ///
+  /// Die SharedPreferences-Umsetzung ruft ihn nie – dort gibt es kein Außen.
+  set onRemoteChange(void Function() rueckmelder);
+
   /// Laufende Sitzung laden – null, wenn kein Timer aktiv war.
   ///
   /// Das ist der Wiederherstellungspfad nach App-Neustart oder OS-Kill.

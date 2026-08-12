@@ -47,7 +47,7 @@ MasterData _bestand() {
       customerId: 'k1',
       hours: [
         WorkHours(
-            id: 'h1', worker: 'Max M.', date: '2026-08-01', task: 'Mauern', h: 8, synced: true)
+            id: 'h1', worker: 'Max M.', date: '2026-08-01', task: 'Mauern', h: 8)
       ],
       materials: [],
       tasks: [],
@@ -171,7 +171,7 @@ void main() {
       await repo.saveWorkHours(
           'p1',
           WorkHours(
-              id: 'h2', worker: 'Anna', date: '2026-08-02', task: 'Putz', h: 4, synced: true));
+              id: 'h2', worker: 'Anna', date: '2026-08-02', task: 'Putz', h: 4));
 
       final unter =
           await db.collection('projects').doc('p1').collection('hours').get();
@@ -214,6 +214,35 @@ void main() {
       final r = await db.collection('roles').doc('Handwerker').get();
       expect(r.data()!['perms'], ['exportDocs']);
     });
+  });
+
+  group('Übertragungsstand', () {
+    test('was bestätigt ist, wartet nicht mehr', () async {
+      final (repo, _) = await _befuellt();
+      await repo.load();
+      await repo.saveWorkHours(
+          'p1',
+          WorkHours(
+              id: 'h3',
+              worker: 'Anna',
+              date: '2026-08-02',
+              task: 'Putz',
+              h: 4));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // Der Nachbau bestätigt sofort – das ist der Normalfall mit Netz.
+      expect(repo.pendingIn('p1'), 0);
+      expect(repo.hasPendingWrites, isFalse);
+    });
+
+    // Die andere Richtung – „wartet noch" – ist hier nicht prüfbar: der
+    // Firestore-Nachbau hat keinen Server und meldet deshalb nie
+    // `hasPendingWrites`. Nachgewiesen wurde sie stattdessen auf dem Gerät:
+    // im Flugmodus Stunden erfasst → „1 noch nicht übertragen", Flugmodus aus
+    // → „Alles übertragen", ohne die Ansicht zu verlassen.
+    test('ein noch nicht bestätigter Schreibvorgang wird gezählt',
+        skip: 'fake_cloud_firestore kennt keine ausstehenden Schreibvorgänge',
+        () async {});
   });
 
   group('Änderungen von außen', () {

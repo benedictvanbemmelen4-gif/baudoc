@@ -6,7 +6,9 @@
 // das auseinander, ist der Monteur angemeldet und sieht trotzdem nichts.
 
 import 'package:baudoc/auth/auth_repository.dart';
+import 'package:baudoc/data/firestore_master_data_repository.dart';
 import 'package:baudoc/main.dart';
+import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -156,6 +158,45 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(Store.I.users.length, anzahl);
+    });
+
+    test('ein neues Konto überlebt den Bestand aus der Datenbank', () async {
+      // Der Fall eines neuen Mitarbeiters am ersten Tag: die Datenbank ist
+      // längst befüllt, sein Konto steht dort aber noch nicht. Beim Verbinden
+      // wird der gesamte Bestand durch den der Datenbank ersetzt – wird er
+      // dabei nicht erneut eingetragen, ist er angemeldet und die App fällt
+      // trotzdem auf den Anmeldebildschirm zurück.
+      final db = FakeFirebaseFirestore();
+      await db.collection('settings').doc('migration').set({'done': true});
+      await db
+          .collection('users')
+          .doc('uid_kollege')
+          .set({'name': 'Max M.', 'role': 'Handwerker', 'email': 'max@b.de'});
+
+      final fake = await _neuerStore();
+      Store.I.backendBuilder =
+          () => FirestoreMasterDataRepository(firestore: db);
+      addTearDown(
+          () => Store.I.backendBuilder = FirestoreMasterDataRepository.new);
+
+      fake.hinterlege(
+          email: 'neu@betrieb.de',
+          password: 'geheim1',
+          name: 'Neu Mitarbeiter',
+          role: 'Handwerker');
+      await fake.signIn(email: 'neu@betrieb.de', password: 'geheim1');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(Store.I.backendAktiv, isTrue);
+      expect(Store.I.currentUser, isNotNull,
+          reason: 'sonst landet der Angemeldete wieder auf dem Login');
+      expect(Store.I.currentUser!.name, 'Neu Mitarbeiter');
+      // Der Kollege aus der Datenbank ist dabei nicht verloren gegangen.
+      expect(Store.I.users.map((u) => u.id), contains('uid_kollege'));
+      // Und das Konto steht jetzt auch in der gemeinsamen Ablage.
+      final drin = await db.collection('users').get();
+      expect(drin.docs.map((d) => d.data()['email']),
+          contains('neu@betrieb.de'));
     });
   });
 

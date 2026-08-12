@@ -30,10 +30,6 @@ class MasterData {
   List<String> roles;
   Map<String, List<String>> rolePerms;
 
-  /// Anzeige-Kennzeichen für „nicht übertragen". Heute eine Attrappe, wird in
-  /// Schritt 6 durch den echten Übertragungsstand ersetzt.
-  bool online;
-
   /// Einmalige Migrationen, die nicht zweimal laufen dürfen.
   bool adminSeeded;
   bool rolesMigrated;
@@ -47,7 +43,6 @@ class MasterData {
     required this.arten,
     required this.roles,
     required this.rolePerms,
-    this.online = true,
     this.adminSeeded = false,
     this.rolesMigrated = false,
   });
@@ -62,7 +57,6 @@ class MasterData {
         arten = List.of(defaultArten),
         roles = List.of(defaultRollen),
         rolePerms = {},
-        online = true,
         adminSeeded = false,
         rolesMigrated = false;
 
@@ -75,7 +69,6 @@ class MasterData {
         'arten': arten,
         'roles': roles,
         'rolePerms': rolePerms,
-        'online': online,
         'adminSeeded': adminSeeded,
         'rolesMigrated': rolesMigrated,
       };
@@ -109,7 +102,6 @@ class MasterData {
           : rawRoles,
       rolePerms: rawPerms.map((k, v) =>
           MapEntry(k as String, ((v as List?) ?? const []).cast<String>())),
-      online: j['online'] ?? true,
       adminSeeded: j['adminSeeded'] ?? false,
       rolesMigrated: j['rolesMigrated'] ?? false,
     );
@@ -127,6 +119,22 @@ abstract class MasterDataRepository {
   ///
   /// Die SharedPreferences-Umsetzung ruft ihn nie: dort gibt es kein Außen.
   set onRemoteChange(void Function() rueckmelder);
+
+  /// Wie viele Änderungen an diesem Auftrag warten noch auf die Übertragung?
+  ///
+  /// Das ist der *echte* Übertragungsstand und ersetzt das frühere Feld
+  /// `synced` in jeder Zeile, das nie umgeschaltet wurde. Gezählt werden der
+  /// Auftrag selbst und seine Stunden- und Foto-Dokumente.
+  ///
+  /// Die SharedPreferences-Umsetzung meldet immer 0 – was auf der Platte
+  /// liegt, wartet auf nichts.
+  int pendingIn(String projectId);
+
+  /// Wartet irgendwo noch etwas auf die Übertragung?
+  ///
+  /// Gilt für den gesamten Bestand, nicht nur für Aufträge – daran hängt die
+  /// Anzeige „alles übertragen" im Kopf der App.
+  bool get hasPendingWrites;
 
   /// Gespeicherten Bestand laden – null, wenn noch nie etwas gespeichert
   /// wurde oder die Daten unlesbar sind. In beiden Fällen befüllt der Aufrufer

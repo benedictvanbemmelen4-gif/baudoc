@@ -52,9 +52,56 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
   /// Bestand und riefe die Oberfläche auf – harmlos, aber unnötig.
   bool _eigenerSchreibvorgang = false;
 
+  /// Dokumente, deren Schreibvorgang noch nicht beim Server angekommen ist –
+  /// je Sammlung eine Menge.
+  ///
+  /// Das ist der echte Übertragungsstand, den früher das erfundene Feld
+  /// `synced` in jeder Zeile vorgab. Firestore kennt ihn selbst: jedes
+  /// Dokument, das lokal geschrieben, aber noch nicht bestätigt ist, trägt
+  /// `metadata.hasPendingWrites`. Je Sammlung getrennt, weil ein Schnappschuss
+  /// immer nur über seine eigene Sammlung vollständig Auskunft gibt.
+  ///
+  /// Schlüssel: bei `hours` `auftragId/zeilenId`, sonst die Dokument-Id.
+  final Map<String, Set<String>> _wartend = {};
+
   @override
   set onRemoteChange(void Function() rueckmelder) =>
       _onRemoteChange = rueckmelder;
+
+  @override
+  int pendingIn(String projectId) {
+    var offen = _wartend['projects']?.contains(projectId) ?? false ? 1 : 0;
+    for (final schluessel in _wartend['hours'] ?? const <String>{}) {
+      if (schluessel.startsWith('$projectId/')) offen++;
+    }
+    return offen;
+  }
+
+  @override
+  bool get hasPendingWrites => _wartend.values.any((m) => m.isNotEmpty);
+
+  /// Übernimmt den Wartestand einer Sammlung aus dem Schnappschuss.
+  ///
+  /// Bewusst die ganze Menge neu aufbauen statt einzelne Änderungen zu
+  /// verrechnen: ein Dokument wechselt von „wartet" nach „angekommen", ohne
+  /// dass sich sein Inhalt ändert, und diese reinen Metadaten-Ereignisse sind
+  /// leicht zu übersehen. Die Mengen sind klein, das kostet nichts.
+  void _merkeWartend(
+    String sammlung,
+    QuerySnapshot<Map<String, dynamic>> schnappschuss,
+    String Function(QueryDocumentSnapshot<Map<String, dynamic>>) schluessel,
+  ) {
+    final neu = <String>{};
+    for (final d in schnappschuss.docs) {
+      if (d.metadata.hasPendingWrites) neu.add(schluessel(d));
+    }
+    final alt = _wartend[sammlung] ?? const <String>{};
+    if (alt.length == neu.length && alt.containsAll(neu)) return;
+    _wartend[sammlung] = neu;
+    // Auch wenn sich sonst nichts geändert hat: die Anzeige „nicht
+    // übertragen" muss verschwinden, sobald der Server bestätigt hat.
+    _onRemoteChange?.call();
+  }
 
   @override
   Future<void> init() async {
@@ -202,20 +249,53 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
   /// sieht die Stunden des Monteurs, sobald er sie erfasst.
   void _hoereZu() {
     _stoppeZuhoerer();
+
+    // `includeMetadataChanges`: ohne das meldet Firestore nur Inhalts-
+    // änderungen. Der Übergang „wartet auf Übertragung" → „angekommen" ist
+    // aber genau eine reine Metadaten-Änderung – ohne diesen Schalter bliebe
+    // die Anzeige „nicht übertragen" stehen, bis zufällig etwas anderes
+    // passiert.
     _zuhoerer.addAll([
-      _db.collection('projects').snapshots().listen(
-          (s) => _uebernimm(s, (j, id) => Project.fromJson({...j, 'id': id}),
-              () => _data!.projects, (p) => p.id)),
-      _db.collection('customers').snapshots().listen(
-          (s) => _uebernimm(s, (j, id) => Customer.fromJson({...j, 'id': id}),
-              () => _data!.customers, (c) => c.id)),
-      _db.collection('catalog').snapshots().listen(
-          (s) => _uebernimm(s, (j, id) => CatalogItem.fromJson({...j, 'id': id}),
-              () => _data!.catalog, (c) => c.id)),
-      _db.collection('pauschalen').snapshots().listen(
-          (s) => _uebernimm(s, (j, id) => Pauschale.fromJson({...j, 'id': id}),
-              () => _data!.pauschalen, (p) => p.id)),
-      _db.collectionGroup('hours').snapshots().listen(_uebernimmStunden),
+      _db
+          .collection('projects')
+          .snapshots(includeMetadataChanges: true)
+          .listen((s) {
+        _merkeWartend('projects', s, (d) => d.id);
+        _uebernimm(s, (j, id) => Project.fromJson({...j, 'id': id}),
+            () => _data!.projects, (p) => p.id);
+      }),
+      _db
+          .collection('customers')
+          .snapshots(includeMetadataChanges: true)
+          .listen((s) {
+        _merkeWartend('customers', s, (d) => d.id);
+        _uebernimm(s, (j, id) => Customer.fromJson({...j, 'id': id}),
+            () => _data!.customers, (c) => c.id);
+      }),
+      _db
+          .collection('catalog')
+          .snapshots(includeMetadataChanges: true)
+          .listen((s) {
+        _merkeWartend('catalog', s, (d) => d.id);
+        _uebernimm(s, (j, id) => CatalogItem.fromJson({...j, 'id': id}),
+            () => _data!.catalog, (c) => c.id);
+      }),
+      _db
+          .collection('pauschalen')
+          .snapshots(includeMetadataChanges: true)
+          .listen((s) {
+        _merkeWartend('pauschalen', s, (d) => d.id);
+        _uebernimm(s, (j, id) => Pauschale.fromJson({...j, 'id': id}),
+            () => _data!.pauschalen, (p) => p.id);
+      }),
+      _db
+          .collectionGroup('hours')
+          .snapshots(includeMetadataChanges: true)
+          .listen((s) {
+        _merkeWartend('hours', s,
+            (d) => '${d.reference.parent.parent?.id ?? '?'}/${d.id}');
+        _uebernimmStunden(s);
+      }),
     ]);
   }
 
@@ -313,6 +393,7 @@ class FirestoreMasterDataRepository implements MasterDataRepository {
   /// Verbindung lösen – beim Abmelden. Danach ist dieses Objekt verbraucht.
   void dispose() {
     _stoppeZuhoerer();
+    _wartend.clear();
     _data = null;
   }
 

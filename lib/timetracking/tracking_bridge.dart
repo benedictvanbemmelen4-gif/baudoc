@@ -12,12 +12,22 @@
 import 'package:flutter/foundation.dart';
 
 import '../main.dart' show Store, WorkHours;
-import 'data/prefs_tracking_repository.dart';
+import 'data/firestore_tracking_repository.dart';
 import 'models/time_entry.dart';
 import 'platform/tracking_gateways.dart';
 import 'services/time_tracking_controller.dart';
 
 TimeTrackingController? _controller;
+
+/// Die Ablage der Zeiten – gemerkt, um beim Abmelden die Zuhörer zu lösen.
+FirestoreTrackingRepository? _ablage;
+
+/// Läuft die Zeiterfassung schon?
+///
+/// [initTimeTracking] hängt am Anmeldezustand, und der meldet sich auch beim
+/// bloßen Erneuern des Tokens erneut. Ohne diese Sperre liefe die
+/// Wiederherstellung dann jedes Mal neu.
+bool _gestartet = false;
 
 /// Die Plattform-Umsetzungen dieser App. Einmal aufgebaut, damit die
 /// Nachhol-Aufrufe nach `init()` dieselben Objekte treffen wie der Controller.
@@ -30,12 +40,18 @@ TrackingGateways? _gateways;
 /// gültigen, leeren Controller statt einer LateInitializationError.
 TimeTrackingController get gTracking => _controller ??= _build();
 
-/// Wird aus `main()` nach `Store.I.load()` gerufen.
+/// Wird gerufen, sobald eine Anmeldung feststeht (siehe `Store._onAccount`).
+///
+/// **Erst dann**, nicht schon in `main()`: die Zeiten liegen jetzt in der
+/// gemeinsamen Datenbank, und die weist jeden Zugriff ohne Anmeldung ab. Ohne
+/// Konto gibt es außerdem niemanden, dem eine Zeit gehören könnte.
 ///
 /// Fehler werden geschluckt: eine kaputte Zeiterfassung darf niemals den
 /// Start der App verhindern – der Monteur muss auch dann an seine Aufträge
 /// kommen.
 Future<void> initTimeTracking() async {
+  if (_gestartet) return;
+  _gestartet = true;
   try {
     await gTracking.init();
     // Erst nach init(): dort setzt der Controller seine Rückmelder. Vorher
@@ -46,6 +62,19 @@ Future<void> initTimeTracking() async {
   }
 }
 
+/// Beim Abmelden: Zuhörer lösen und Controller verwerfen.
+///
+/// Sonst liefen die Firestore-Zuhörer ohne Anmeldung weiter – die Regeln
+/// weisen sie mit Fehlern ab – und der Nächste, der sich an diesem Gerät
+/// anmeldet, bekäme die Liste seines Vorgängers zu sehen. Die laufende Sitzung
+/// bleibt auf dem Gerät und wird beim nächsten Anmelden wiederhergestellt.
+void disposeTimeTracking() {
+  _ablage?.dispose();
+  _ablage = null;
+  _controller = null;
+  _gestartet = false;
+}
+
 TimeTrackingController _build() {
   // Auf Android die echten Umsetzungen, sonst die wirkungslosen – die Auswahl
   // trifft platform/tracking_gateways.dart. Für Web und Desktop bedeutet das:
@@ -53,16 +82,25 @@ TimeTrackingController _build() {
   // Ankunftserkennung entfällt.
   final gateways = _gateways ??= buildTrackingGateways();
 
+  final ablage = _ablage = FirestoreTrackingRepository(currentUserId: _wer);
+
   return TimeTrackingController(
-    repository: PrefsTrackingRepository(),
+    repository: ablage,
     geofence: gateways.geofence,
     notifications: gateways.notifications,
     runningIndicator: gateways.runningIndicator,
-    currentUserId: () => Store.I.currentUser?.id ?? '',
+    currentUserId: _wer,
     orderLookup: _lookupOrder,
     onEntryCompleted: _writeToWorkHours,
+    // Wer die Abrechnung erstellt, prüft auch die Zeiten der anderen. Alle
+    // übrigen sehen in der Prüfliste nur ihre eigenen.
+    canReviewOthers: () => Store.I.can('exportDocs'),
   );
 }
+
+/// Wem gehört die erfasste Zeit? Nach der Umstellung auf echte Konten ist das
+/// die Firebase-Kennung – dieselbe, die auch der Server prüft.
+String _wer() => Store.I.currentUser?.id ?? '';
 
 // ---------------------------------------------------------------------------
 // Auftragsdaten
@@ -110,7 +148,6 @@ void _writeToWorkHours(TimeEntry entry) {
         ? 'Zeiterfassung ${_hhmm(entry.startTime)}–${_hhmm(entry.endTime)}'
         : entry.task.trim(),
     h: hours,
-    synced: Store.I.online,
   );
 
   if (existing >= 0) {

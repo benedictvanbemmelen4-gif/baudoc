@@ -42,6 +42,20 @@ class PrefsTrackingRepository implements TrackingRepository {
     _prefs ??= await SharedPreferences.getInstance();
   }
 
+  /// Wird hier nie gerufen: eine Datei auf dem Gerät ändert sich nicht von
+  /// selbst. Der Setzer existiert nur, weil der Vertrag ihn verlangt.
+  @override
+  set onRemoteChange(void Function() rueckmelder) {}
+
+  /// Merkzettel für einmalige Vorgänge – die Übernahme des Gerätejournals in
+  /// die gemeinsame Ablage darf nicht bei jedem Start erneut laufen (siehe
+  /// firestore_tracking_repository.dart). Steht hier, weil dieses Objekt die
+  /// Gerätespeicherung besitzt.
+  Future<bool> getFlag(String name) async => _p.getBool(name) ?? false;
+
+  Future<void> setFlag(String name, bool wert) async =>
+      _p.setBool(name, wert);
+
   // ---- Sitzung ----
 
   @override

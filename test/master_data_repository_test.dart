@@ -94,7 +94,6 @@ void main() {
       // Leere/fehlende Listen fallen auf die Standardvorgaben zurück.
       expect(data!.arten, defaultArten);
       expect(data.roles, defaultRollen);
-      expect(data.online, isTrue);
       expect(data.adminSeeded, isFalse);
     });
   });

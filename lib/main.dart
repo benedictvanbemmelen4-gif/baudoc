@@ -156,7 +156,15 @@ class Store extends ChangeNotifier {
   List<String> get arten => _data.arten; // Kategorien/Gewerke (bearbeitbar)
   List<String> get roles => _data.roles; // Rollen (bearbeitbar)
   Map<String, List<String>> get rolePerms => _data.rolePerms;
-  bool get online => _data.online;
+
+  /// Wie viele Änderungen an diesem Auftrag warten noch auf die Übertragung?
+  ///
+  /// Kommt aus der Datenbank selbst und ersetzt das frühere Feld `synced` in
+  /// jeder Zeile, das nie umgeschaltet wurde und deshalb nichts aussagte.
+  int pendingIn(String projectId) => _repo.pendingIn(projectId);
+
+  /// Ist alles beim Server angekommen?
+  bool get allesUebertragen => !_repo.hasPendingWrites;
 
   /// Kennung des angemeldeten Kontos (Firebase-uid). Wird ausschließlich aus
   /// [_onAccount] gesetzt – die Anmeldung führt Firebase, nicht die App.
@@ -298,10 +306,12 @@ class Store extends ChangeNotifier {
   /// der App nur zur Anzeige.
   void _onAccount(Account? account) {
     authReady = true;
+    _konto = account;
 
     if (account == null) {
       sessionId = null;
       _loeseBackend();
+      disposeTimeTracking();
       notifyListeners();
       return;
     }
@@ -309,7 +319,29 @@ class Store extends ChangeNotifier {
     sessionId = account.uid;
     // Jetzt darf die App an die Datenbank – vorher weisen die Regeln sie ab.
     _verbindeBackend();
+    _uebernimmKonto(account);
 
+    // Jetzt erst: die Zeiterfassung schreibt in die gemeinsame Datenbank und
+    // braucht dafür die Anmeldung. Stellt zugleich einen laufenden Timer nach
+    // App-Neustart oder OS-Kill wieder her. Nicht abgewartet – die Oberfläche
+    // soll nicht darauf warten.
+    initTimeTracking();
+
+    notifyListeners();
+  }
+
+  /// Das zuletzt gemeldete Konto.
+  ///
+  /// Gebraucht, wenn der Bestand nach dem Verbinden mit der Datenbank
+  /// ausgetauscht wird – siehe [_verbindeBackend].
+  Account? _konto;
+
+  /// Trägt das angemeldete Konto als [AppUser] in den Bestand ein.
+  ///
+  /// Muss nach jedem Austausch des Bestands erneut laufen: `currentUser` sucht
+  /// den Benutzer in **dieser** Liste, und ein frisch angelegtes Konto steht
+  /// noch in keiner Datenbank.
+  void _uebernimmKonto(Account account) {
     final name = account.name.trim().isNotEmpty
         ? account.name.trim()
         : account.email.split('@').first;
@@ -338,7 +370,6 @@ class Store extends ChangeNotifier {
       _sicherstellenRolleBekannt(u.role);
       if (geaendert) saveUser(u);
     }
-    notifyListeners();
   }
 
   // ---------------------------------------------------------------------
@@ -368,6 +399,16 @@ class Store extends ChangeNotifier {
 
       _backend = backend;
       _repo = backend;
+
+      // Der Bestand kommt jetzt vom Server – und der kennt ein gerade erst
+      // angelegtes Konto noch nicht. Ohne dieses erneute Eintragen fiele die
+      // App unmittelbar nach dem Anmelden auf den Anmeldebildschirm zurück:
+      // `currentUser` sucht den Benutzer in genau dieser Liste. Erst hier,
+      // nachdem `_repo` steht, damit der Eintrag auch in der Datenbank landet
+      // und nicht nur auf dem Gerät.
+      final konto = _konto;
+      if (konto != null) _uebernimmKonto(konto);
+
       notifyListeners();
     } catch (e, st) {
       // Kein Netz, keine Rechte, kaputte Konfiguration: dann bleibt es beim
@@ -513,8 +554,7 @@ class Store extends ChangeNotifier {
               worker: 'Max M.',
               date: today(),
               h: 8,
-              task: 'Mauern EG',
-              synced: true),
+              task: 'Mauern EG'),
         ],
         materials: [
           MaterialItem(
@@ -523,8 +563,7 @@ class Store extends ChangeNotifier {
               unit: 'm³',
               date: today(),
               qty: 12,
-              price: 115,
-              synced: true),
+              price: 115),
         ],
         tasks: [
           Task(id: uid(), title: 'Fundament gießen', due: '', done: true),
@@ -542,7 +581,6 @@ class Store extends ChangeNotifier {
       arten: List.of(defaultArten),
       roles: List.of(defaultRollen),
       rolePerms: _defaultRolePerms(),
-      online: true,
       adminSeeded: true,
       rolesMigrated: true,
     );
@@ -571,9 +609,13 @@ class Store extends ChangeNotifier {
 double sumHours(Project p) => p.hours.fold(0.0, (a, h) => a + h.h);
 double sumMaterial(Project p) =>
     p.materials.fold(0.0, (a, m) => a + m.qty * m.price);
-int pending(Project p) =>
-    p.hours.where((h) => !h.synced).length +
-    p.materials.where((m) => !m.synced).length;
+/// Noch nicht übertragene Änderungen an diesem Auftrag.
+///
+/// Früher zählte das die Zeilen mit `synced == false` – ein Feld, das beim
+/// Anlegen einmal gesetzt und nie wieder angefasst wurde, sodass hier immer 0
+/// herauskam. Jetzt antwortet die Datenbank: Firestore weiß, welche Dokumente
+/// lokal geschrieben, aber noch nicht bestätigt sind.
+int pending(Project p) => Store.I.pendingIn(p.id);
 
 // Warn-/Amber-Ton (Fälligkeit bald, offene Mängel) – ergänzt die Kernpalette.
 Color get kWarn => _pick(0xFFB4791A, 0xFFE0A94A); // Warnung / bald fällig
@@ -607,8 +649,11 @@ void main() async {
   // und braucht ihn deshalb bereits geladen. Bewusst nicht abgewartet – die
   // Oberfläche zeigt so lange den Ladezustand, statt den Start zu verzögern.
   Store.I.watchAuth();
-  // Stellt einen laufenden Timer nach App-Neustart oder OS-Kill wieder her.
-  await initTimeTracking();
+  // Die Zeiterfassung startet nicht mehr hier, sondern sobald eine Anmeldung
+  // feststeht (Store._onAccount): die Zeiten liegen jetzt in der gemeinsamen
+  // Datenbank, und die weist jeden Zugriff ohne Anmeldung ab. Ein laufender
+  // Timer wird dabei wie bisher wiederhergestellt – die Sitzung liegt
+  // weiterhin auf dem Gerät.
   runApp(const BauDocApp());
 }
 
@@ -2342,10 +2387,12 @@ class ProjectScreen extends StatelessWidget {
                     _infoChip(Icons.flag_outlined, 'Fällig: ${dLong(p.due)}',
                         kViolet),
                   _infoChip(
-                      Icons.cloud_outlined,
                       pending(p) > 0
-                          ? '${pending(p)} nicht synchronisiert'
-                          : 'Alles synchronisiert',
+                          ? Icons.cloud_upload_outlined
+                          : Icons.cloud_done_outlined,
+                      pending(p) > 0
+                          ? '${pending(p)} noch nicht übertragen'
+                          : 'Alles übertragen',
                       pending(p) > 0 ? kAccent : kGreen),
                 ],
               ),
@@ -4212,8 +4259,7 @@ void showHoursForm(BuildContext context, Project p) {
                   worker: worker,
                   date: today(),
                   task: task.text.trim(),
-                  h: double.tryParse(hrs.text.replaceAll(',', '.')) ?? 0,
-                  synced: Store.I.online);
+                  h: double.tryParse(hrs.text.replaceAll(',', '.')) ?? 0);
               p.hours.add(zeile);
               Store.I.saveWorkHours(p.id, zeile);
               Navigator.pop(ctx);
@@ -4268,8 +4314,7 @@ void showMaterialForm(BuildContext context, Project p) {
                   unit: sel!.unit,
                   date: today(),
                   qty: double.tryParse(qty.text.replaceAll(',', '.')) ?? 0,
-                  price: sel!.price,
-                  synced: Store.I.online));
+                  price: sel!.price));
               Store.I.saveProject(p);
               Navigator.pop(ctx);
             }),

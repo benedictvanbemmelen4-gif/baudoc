@@ -150,15 +150,30 @@ service cloud.firestore {
     }
 
     // -----------------------------------------------------------------
-    // Zeiterfassung (Schritt 6)
+    // Zeiterfassung
     // -----------------------------------------------------------------
 
-    // Seine eigenen Zeiten verwaltet jeder selbst. Lesen darf sie zusätzlich,
-    // wer Auswertungen erstellt – der Stundenzettel geht über alle Mitarbeiter.
+    // Erfasste Arbeitszeit – die Zeiten, die der Monteur auf der Baustelle
+    // startet und stoppt. Bis hierher lagen sie nur auf seinem Handy.
+    //
+    // Seine eigenen verwaltet jeder selbst. Korrigieren darf zusätzlich, wer
+    // die Abrechnung erstellt; lesen dürfen alle, weil der Stundenzettel über
+    // alle Mitarbeiter geht.
     match /timeEntries/{id} {
       allow read: if angemeldet();
-      allow create: if angemeldet() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if angemeldet() && (
+
+      // Arbeitszeit im Namen eines anderen anzulegen ist ausgeschlossen –
+      // sonst könnte sich jeder Stunden auf fremde Konten schreiben.
+      allow create: if angemeldet()
+        && request.resource.data.userId == request.auth.uid;
+
+      // Auch beim Korrigieren bleibt der Eintrag bei seinem Mitarbeiter. Das
+      // Büro darf Zeiten prüfen und richtigstellen, aber nicht umhängen.
+      allow update: if angemeldet()
+        && request.resource.data.userId == resource.data.userId
+        && (resource.data.userId == request.auth.uid || darf('exportDocs'));
+
+      allow delete: if angemeldet() && (
         resource.data.userId == request.auth.uid || darf('exportDocs')
       );
     }

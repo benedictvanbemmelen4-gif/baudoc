@@ -55,6 +55,11 @@ class TimeTrackingController extends ChangeNotifier {
   /// Liefert die Auftragsdaten zu einer ID (null, wenn gelöscht).
   final TrackedOrder? Function(String orderId) orderLookup;
 
+  /// Darf dieser Anwender auch die Zeiten anderer prüfen – also Büro oder
+  /// Meister? Siehe [entriesNeedingReview]. Vorbelegt mit „ja", damit Tests
+  /// und Aufrufer ohne Rechteverwaltung unverändert bleiben.
+  final bool Function() canReviewOthers;
+
   /// Wird gerufen, sobald ein Eintrag abgeschlossen ist. Hier hängt die
   /// Haupt-App die Übernahme in `Project.hours` ein, damit PDF- und
   /// CSV-Export unverändert weiterfunktionieren.
@@ -67,6 +72,7 @@ class TimeTrackingController extends ChangeNotifier {
     required this.currentUserId,
     required this.orderLookup,
     this.onEntryCompleted,
+    this.canReviewOthers = _jederPruefe,
     this.runningIndicator = const NoopRunningIndicator(),
     TimeTrackingMachine? machine,
   }) : machine = machine ??
@@ -76,6 +82,8 @@ class TimeTrackingController extends ChangeNotifier {
             );
 
   static int _seq = 0;
+
+  static bool _jederPruefe() => true;
 
   TrackingSession? _session;
   List<TimeEntry> _entries = const [];
@@ -103,12 +111,22 @@ class TimeTrackingController extends ChangeNotifier {
   /// Warnung für die Oberfläche, wenn Teile der Automatik nicht laufen.
   String? get degradedHint => _degradedHint;
 
-  /// Einträge, die Büro/Meister prüfen müssen.
-  List<TimeEntry> get entriesNeedingReview => _entries
-      .where((e) =>
-          e.status == TimeEntryStatus.unconfirmed ||
-          e.status == TimeEntryStatus.flaggedForReview)
-      .toList();
+  /// Einträge, die geprüft werden müssen.
+  ///
+  /// Seit die Zeiten in der gemeinsamen Ablage liegen, kennt jedes Gerät alle
+  /// Einträge. Der Monteur bekommt hier trotzdem nur seine eigenen zu sehen:
+  /// die Zeit eines Kollegen zu bestätigen wäre nicht seine Aufgabe, und der
+  /// Server ließe die Korrektur ohnehin nicht zu (firestore.rules).
+  List<TimeEntry> get entriesNeedingReview {
+    final wer = currentUserId();
+    final alle = canReviewOthers();
+    return _entries
+        .where((e) =>
+            (e.status == TimeEntryStatus.unconfirmed ||
+                e.status == TimeEntryStatus.flaggedForReview) &&
+            (alle || e.userId == wer))
+        .toList();
+  }
 
   /// Laufende Nettozeit für die Anzeige.
   Duration get elapsed {
@@ -139,6 +157,11 @@ class TimeTrackingController extends ChangeNotifier {
     geofence.setCallback(_onGeofenceEvent);
     notifications.setActionCallback(_onNotificationAction);
 
+    // Zeiten, die woanders entstehen: der Kollege erfasst, das Büro
+    // korrigiert. Bei der Gerätespeicherung bleibt der Rückmelder unbenutzt –
+    // dort gibt es kein Außen.
+    repository.onRemoteChange = _onRemoteEntries;
+
     // Sicherheitsnetz nachholen: war das Gerät zur geplanten Kappungszeit aus,
     // ist der Alarm nie ausgelöst worden. Beim nächsten Start nachziehen –
     // sonst läuft ein vergessener Timer tagelang weiter.
@@ -147,6 +170,18 @@ class TimeTrackingController extends ChangeNotifier {
 
     _ready = true;
     notifyListeners();
+  }
+
+  /// Ein Eintrag ist von außen dazugekommen oder wurde geändert.
+  ///
+  /// Die laufende Sitzung bleibt unberührt – sie gehört diesem Gerät. Nur die
+  /// Liste wird nachgezogen, damit der Prüf-Bildschirm die Zeit des Kollegen
+  /// zeigt, ohne dass jemand die App neu startet.
+  void _onRemoteEntries() {
+    repository.loadEntries().then((liste) {
+      _entries = liste;
+      notifyListeners();
+    });
   }
 
   /// Rettet eine Sitzung, deren Auftrag es nicht mehr gibt (gelöscht oder
