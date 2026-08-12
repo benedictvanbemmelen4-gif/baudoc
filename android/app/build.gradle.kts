@@ -64,6 +64,12 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            // Ohne eigene Regeln entfernt R8 Klassen, die nur per Reflexion
+            // benutzt werden -- siehe proguard-rules.pro.
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 }
