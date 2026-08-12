@@ -97,7 +97,7 @@ void _writeToWorkHours(TimeEntry entry) {
   if (entry.status == TimeEntryStatus.rejected || hours <= 0) {
     if (existing >= 0) {
       p.hours.removeAt(existing);
-      Store.I.save();
+      Store.I.saveProject(p);
     }
     return;
   }
@@ -118,7 +118,7 @@ void _writeToWorkHours(TimeEntry entry) {
   } else {
     p.hours.add(row);
   }
-  Store.I.save();
+  Store.I.saveProject(p);
 }
 
 String _workerName(String userId) {

@@ -7,6 +7,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 // Zugangsdaten des Firebase-Projekts, erzeugt von `flutterfire configure`.
 import 'firebase_options.dart';
 
+// Datenmodelle und Stammdaten-Konstanten. Weitergereicht (`export`), weil
+// andere Module sie bisher aus main.dart bezogen haben – etwa
+// `import '../main.dart' show Store, WorkHours;` in tracking_bridge.dart.
+export 'models.dart';
+import 'models.dart';
+
+// Speicherung der Stammdaten hinter einem Vertrag (lib/data/).
+import 'data/master_data_repository.dart';
+import 'data/prefs_master_data_repository.dart';
+
 // Plattform-spezifischer Datei-Export (Web-Download vs. Teilen-Dialog).
 import 'csv_export_io.dart' if (dart.library.js_interop) 'csv_export_web.dart';
 import 'pdf_invoice.dart';
@@ -50,51 +60,8 @@ Color get kBlue => _pick(0xFF2563EB, 0xFF6C9BF5); // Info
 Color get kViolet => _pick(0xFF7C3AED, 0xFFA78BFA); // Akzent sekundär
 Color get kRed => _pick(0xFFD64545, 0xFFF0716C); // Fehler / Löschen
 
-// Standard-Kategorien (Gewerke) – nur zum Erstbefüllen. Zur Laufzeit ist die
-// Liste über Store.I.arten pro Firma bearbeitbar und wird persistiert.
-const defaultArten = [
-  'Solaranlage',
-  'Wärmepumpe',
-  'Heizung',
-  'Sanitär',
-  'Elektro',
-  'Dach',
-  'Neubau',
-  'Sonstiges'
-];
-// Rollen sind zur Laufzeit über Store.roles frei bearbeitbar; diese Liste dient
-// nur dem Erstbefüllen. 'Administrator' ist geschützt und hat immer alle Rechte.
-const kAdminRole = 'Administrator';
-const defaultRollen = ['Administrator', 'Büro', 'Meister', 'Handwerker'];
-
-// Berechtigungen: Schlüssel → Anzeigename (erweiterbar). Jede Rolle bekommt in
-// Store.rolePerms eine Teilmenge davon zugewiesen.
-const kPerms = <String, String>{
-  'wages': 'Stundenlöhne verwalten',
-  'pauschalen': 'Pauschalen verwalten',
-  'materialPrices': 'Material-Preise verwalten',
-  'categories': 'Kategorien verwalten',
-  'usersRoles': 'Benutzer & Rollen verwalten',
-  'exportDocs': 'Rechnung / CSV exportieren',
-  'editProjects': 'Aufträge anlegen & bearbeiten',
-  'deleteProjects': 'Aufträge löschen',
-};
-// Diese Rechte machen den Verwaltungs-Bereich sichtbar.
-const kManagePerms = [
-  'pauschalen',
-  'materialPrices',
-  'categories',
-  'usersRoles'
-];
-// Legacy-Rollennamen → neue Rollen (einmalige Migration bestehender Daten).
-const _roleRename = {'Büro/Buchhaltung': 'Büro', 'Baustelle': 'Handwerker'};
-
-const einheiten = ['Stk', 'm', 'm²', 'm³', 'kg', 't', 'l', 'h', 'Pkt'];
 
 // ---------- Helfer ----------
-int _seq = 0;
-String uid() => '${DateTime.now().microsecondsSinceEpoch}_${_seq++}';
-String today() => DateTime.now().toIso8601String().substring(0, 10);
 String eur(num n) => '${n.toStringAsFixed(2).replaceAll('.', ',')} €';
 String dShort(String d) {
   if (d.isEmpty) return '';
@@ -135,278 +102,37 @@ String initials(String name) {
   return s.isEmpty ? '?' : s;
 }
 
-// ---------- Modelle ----------
-class AppUser {
-  String id, name, role, pin;
-  double wage; // Stundenlohn €/h (0 = nicht hinterlegt)
-  AppUser(
-      {required this.id,
-      required this.name,
-      required this.role,
-      required this.pin,
-      this.wage = 0});
-  Map<String, dynamic> toJson() =>
-      {'id': id, 'name': name, 'role': role, 'pin': pin, 'wage': wage};
-  factory AppUser.fromJson(Map<String, dynamic> j) => AppUser(
-      id: j['id'],
-      name: j['name'],
-      role: j['role'],
-      pin: j['pin'],
-      wage: (j['wage'] as num?)?.toDouble() ?? 0);
-}
-
-class CatalogItem {
-  String id, name, unit;
-  double price;
-  CatalogItem(
-      {required this.id,
-      required this.name,
-      required this.unit,
-      required this.price});
-  Map<String, dynamic> toJson() =>
-      {'id': id, 'name': name, 'unit': unit, 'price': price};
-  factory CatalogItem.fromJson(Map<String, dynamic> j) => CatalogItem(
-      id: j['id'],
-      name: j['name'],
-      unit: j['unit'],
-      price: (j['price'] as num).toDouble());
-}
-
-class Pauschale {
-  String id, name;
-  double amount;
-  Pauschale({required this.id, required this.name, required this.amount});
-  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'amount': amount};
-  factory Pauschale.fromJson(Map<String, dynamic> j) => Pauschale(
-      id: j['id'],
-      name: j['name'] ?? '',
-      amount: (j['amount'] as num?)?.toDouble() ?? 0);
-}
-
-class Customer {
-  String id, name, address, contact;
-  Customer(
-      {required this.id,
-      required this.name,
-      this.address = '',
-      this.contact = ''});
-  Map<String, dynamic> toJson() =>
-      {'id': id, 'name': name, 'address': address, 'contact': contact};
-  factory Customer.fromJson(Map<String, dynamic> j) => Customer(
-      id: j['id'],
-      name: j['name'] ?? '',
-      address: j['address'] ?? '',
-      contact: j['contact'] ?? '');
-}
-
-class WorkHours {
-  String id, worker, date, task;
-  double h;
-  bool synced;
-  WorkHours(
-      {required this.id,
-      required this.worker,
-      required this.date,
-      required this.task,
-      required this.h,
-      required this.synced});
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'worker': worker,
-        'date': date,
-        'task': task,
-        'h': h,
-        'synced': synced
-      };
-  factory WorkHours.fromJson(Map<String, dynamic> j) => WorkHours(
-      id: j['id'],
-      worker: j['worker'],
-      date: j['date'],
-      task: j['task'] ?? '',
-      h: (j['h'] as num).toDouble(),
-      synced: j['synced'] ?? true);
-}
-
-class MaterialItem {
-  String id, name, unit, date;
-  double qty, price;
-  bool synced;
-  MaterialItem(
-      {required this.id,
-      required this.name,
-      required this.unit,
-      required this.date,
-      required this.qty,
-      required this.price,
-      required this.synced});
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'unit': unit,
-        'date': date,
-        'qty': qty,
-        'price': price,
-        'synced': synced
-      };
-  factory MaterialItem.fromJson(Map<String, dynamic> j) => MaterialItem(
-      id: j['id'],
-      name: j['name'],
-      unit: j['unit'],
-      date: j['date'] ?? '',
-      qty: (j['qty'] as num).toDouble(),
-      price: (j['price'] as num).toDouble(),
-      synced: j['synced'] ?? true);
-}
-
-class Task {
-  String id, title, due;
-  bool done;
-  Task(
-      {required this.id,
-      required this.title,
-      required this.due,
-      required this.done});
-  Map<String, dynamic> toJson() =>
-      {'id': id, 'title': title, 'due': due, 'done': done};
-  factory Task.fromJson(Map<String, dynamic> j) => Task(
-      id: j['id'],
-      title: j['title'],
-      due: j['due'] ?? '',
-      done: j['done'] ?? false);
-}
-
-class Defect {
-  String id, title, description, date;
-  bool done;
-  Defect(
-      {required this.id,
-      required this.title,
-      this.description = '',
-      this.date = '',
-      this.done = false});
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'title': title,
-        'description': description,
-        'date': date,
-        'done': done
-      };
-  factory Defect.fromJson(Map<String, dynamic> j) => Defect(
-      id: j['id'],
-      title: j['title'] ?? '',
-      description: j['description'] ?? '',
-      date: j['date'] ?? '',
-      done: j['done'] ?? false);
-}
-
-class Note {
-  String id, date, text, weather, temp;
-  Note(
-      {required this.id,
-      required this.date,
-      required this.text,
-      this.weather = '',
-      this.temp = ''});
-  Map<String, dynamic> toJson() =>
-      {'id': id, 'date': date, 'text': text, 'weather': weather, 'temp': temp};
-  factory Note.fromJson(Map<String, dynamic> j) => Note(
-      id: j['id'],
-      date: j['date'] ?? '',
-      text: j['text'] ?? '',
-      weather: j['weather'] ?? '',
-      temp: j['temp'] ?? '');
-}
-
-class Project {
-  String id, name, type, address, status, date, due, customerId;
-  List<WorkHours> hours;
-  List<MaterialItem> materials;
-  List<Task> tasks;
-  List<Note> notes;
-  List<String> photos;
-  List<Defect> defects;
-  Project(
-      {required this.id,
-      required this.name,
-      required this.type,
-      required this.address,
-      required this.status,
-      required this.hours,
-      required this.materials,
-      required this.tasks,
-      this.date = '',
-      this.due = '',
-      this.customerId = '',
-      List<Note>? notes,
-      List<String>? photos,
-      List<Defect>? defects})
-      : notes = notes ?? [],
-        photos = photos ?? [],
-        defects = defects ?? [];
-  bool get isOpen => status == 'active';
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'type': type,
-        'address': address,
-        'status': status,
-        'date': date,
-        'due': due,
-        'customerId': customerId,
-        'hours': hours.map((e) => e.toJson()).toList(),
-        'materials': materials.map((e) => e.toJson()).toList(),
-        'tasks': tasks.map((e) => e.toJson()).toList(),
-        'notes': notes.map((e) => e.toJson()).toList(),
-        'photos': photos,
-        'defects': defects.map((e) => e.toJson()).toList(),
-      };
-  factory Project.fromJson(Map<String, dynamic> j) => Project(
-        id: j['id'],
-        name: j['name'],
-        type: j['type'] ?? '',
-        address: j['address'] ?? '',
-        status: j['status'] ?? 'active',
-        date: j['date'] ?? '',
-        due: j['due'] ?? '',
-        customerId: j['customerId'] ?? '',
-        hours: ((j['hours'] ?? []) as List)
-            .map((e) => WorkHours.fromJson(e))
-            .toList(),
-        materials: ((j['materials'] ?? []) as List)
-            .map((e) => MaterialItem.fromJson(e))
-            .toList(),
-        tasks:
-            ((j['tasks'] ?? []) as List).map((e) => Task.fromJson(e)).toList(),
-        notes:
-            ((j['notes'] ?? []) as List).map((e) => Note.fromJson(e)).toList(),
-        photos: ((j['photos'] ?? []) as List).map((e) => e as String).toList(),
-        defects: ((j['defects'] ?? []) as List)
-            .map((e) => Defect.fromJson(e))
-            .toList(),
-      );
-}
 
 // ---------- Store (Daten + Persistenz) ----------
 class Store extends ChangeNotifier {
   static final Store I = Store._();
   Store._();
 
-  List<CatalogItem> catalog = [];
-  List<Customer> customers = [];
-  List<Pauschale> pauschalen = [];
-  List<Project> projects = [];
-  List<AppUser> users = [];
-  List<String> arten =
-      List.of(defaultArten); // Kategorien/Gewerke (bearbeitbar)
-  List<String> roles = List.of(defaultRollen); // Rollen (bearbeitbar)
-  Map<String, List<String>> rolePerms = {}; // Rolle → Rechte-Schlüssel
-  bool online = true;
-  bool _adminSeeded = false;
-  bool _rolesMigrated = false;
+  /// Die Speicherung. Heute SharedPreferences, ab Schritt 4 wahlweise
+  /// Firestore – hier wird dann eine Zeile getauscht, sonst nichts.
+  final MasterDataRepository _repo = PrefsMasterDataRepository();
+
+  /// Der Bestand. Die Listen sind **dieselben Objekte**, die auch das
+  /// Repository hält: was die Oberfläche an einem Auftrag ändert, sieht die
+  /// Speicherung ohne Umweg.
+  MasterData _data = MasterData.empty();
+
+  List<CatalogItem> get catalog => _data.catalog;
+  List<Customer> get customers => _data.customers;
+  List<Pauschale> get pauschalen => _data.pauschalen;
+  List<Project> get projects => _data.projects;
+  List<AppUser> get users => _data.users;
+  List<String> get arten => _data.arten; // Kategorien/Gewerke (bearbeitbar)
+  List<String> get roles => _data.roles; // Rollen (bearbeitbar)
+  Map<String, List<String>> get rolePerms => _data.rolePerms;
+  bool get online => _data.online;
+
   String? sessionId;
+
+  /// Nur noch für Sitzung und Dunkelmodus zuständig – die Stammdaten laufen
+  /// vollständig über [_repo].
   late SharedPreferences _p;
 
-  static const _key = 'baudoc.flutter';
   static const _skey = 'baudoc.session';
 
   AppUser? get currentUser {
@@ -444,62 +170,92 @@ class Store extends ChangeNotifier {
   Future<void> load() async {
     _p = await SharedPreferences.getInstance();
     gDark.value = _p.getBool('darkMode') ?? false;
-    final raw = _p.getString(_key);
-    var ok = false;
-    if (raw != null) {
-      try {
-        _fromJson(jsonDecode(raw) as Map<String, dynamic>);
-        ok = true;
-      } catch (_) {}
-    }
-    if (!ok) _seed();
-    if (users.isEmpty) users = _defaultUsers();
+
+    await _repo.init();
+    final loaded = await _repo.load();
+    final ok = loaded != null;
+    _data = loaded ?? _seed();
+    if (users.isEmpty) _data.users = _defaultUsers();
+
     // Einmalige Migration: einen Administrator-Benutzer sicherstellen
-    if (!_adminSeeded) {
-      if (!users.any((u) => u.role == 'Administrator')) {
+    var changed = false;
+    if (!_data.adminSeeded) {
+      if (!users.any((u) => u.role == kAdminRole)) {
         users.add(AppUser(
-            id: uid(),
-            name: 'Administrator',
-            role: 'Administrator',
-            pin: '0000'));
+            id: uid(), name: 'Administrator', role: kAdminRole, pin: '0000'));
       }
-      _adminSeeded = true;
-      save();
+      _data.adminSeeded = true;
+      changed = true;
     }
     // Einmalige Migration: alte Rollennamen auf das neue Rollen-Set abbilden.
-    if (!_rolesMigrated) {
+    if (!_data.rolesMigrated) {
       for (final u in users) {
-        final mapped = _roleRename[u.role];
+        final mapped = kRoleRename[u.role];
         if (mapped != null) u.role = mapped;
       }
-      roles = List.of(defaultRollen);
-      _rolesMigrated = true;
-      save();
+      _data.roles = List.of(defaultRollen);
+      _data.rolesMigrated = true;
+      changed = true;
     }
     // Sicherstellen: jede benutzte Rolle existiert und hat einen Rechte-Eintrag.
     for (final u in users) {
       if (!roles.contains(u.role)) roles.add(u.role);
     }
-    var permsChanged = false;
     for (final r in roles) {
       if (!rolePerms.containsKey(r)) {
         rolePerms[r] = _defaultPermsFor(r);
-        permsChanged = true;
+        changed = true;
       }
     }
-    if (permsChanged) save();
-    // Frisch geseedete Daten einmal festschreiben. `_seed()` setzt selbst
-    // `_adminSeeded` und `_rolesMigrated` und füllt `rolePerms` – dadurch
-    // greift oben keine der drei `save()`-Bedingungen, und es landete nie
-    // etwas auf der Platte. Folge: bei jedem Start neue Auftrags-IDs, während
-    // die Zeiterfassung ihre Sitzung sehr wohl behält.
-    if (!ok) save();
+
+    // Erstbefüllung und Migrationen in *einem* Schreibvorgang festhalten.
+    // Frisch geseedete Daten müssen unbedingt mit: `_seed()` setzt selbst
+    // `adminSeeded` und `rolesMigrated` und füllt `rolePerms` – ohne das
+    // `!ok` griffe keine der Bedingungen, und es landete nie etwas auf der
+    // Platte. Folge wäre bei jedem Start eine neue Auftrags-Id, während die
+    // Zeiterfassung ihre Sitzung sehr wohl behält.
+    if (!ok || changed) await _repo.replaceAll(_data);
+
     sessionId = _p.getString(_skey);
   }
 
-  void save() {
-    _p.setString(_key, jsonEncode(_toJson()));
+  // ---------------------------------------------------------------------
+  // Speichern
+  //
+  // Je Datensatz statt „alles". Für SharedPreferences läuft es zwar weiterhin
+  // auf einen einzigen Schreibvorgang hinaus, aber die Aufrufer sagen jetzt,
+  // *was* sich geändert hat – und genau das braucht ein Backend, damit nicht
+  // jede Kleinigkeit den ganzen Bestand überschreibt (und dabei die Änderungen
+  // der Kollegen mit).
+  // ---------------------------------------------------------------------
+
+  void saveProject(Project p) => _write(_repo.saveProject(p));
+  void removeProject(String id) => _write(_repo.deleteProject(id));
+
+  void saveCustomer(Customer c) => _write(_repo.saveCustomer(c));
+  void removeCustomer(String id) => _write(_repo.deleteCustomer(id));
+
+  void saveUser(AppUser u) => _write(_repo.saveUser(u));
+  void removeUser(String id) => _write(_repo.deleteUser(id));
+
+  void saveCatalogItem(CatalogItem c) => _write(_repo.saveCatalogItem(c));
+  void removeCatalogItem(String id) => _write(_repo.deleteCatalogItem(id));
+
+  void savePauschale(Pauschale p) => _write(_repo.savePauschale(p));
+  void removePauschale(String id) => _write(_repo.deletePauschale(id));
+
+  /// Kategorien, Rollen und Rechte – Listen ohne eigene Id.
+  void saveSettings() => _write(_repo.saveSettings());
+
+  /// Gemeinsamer Abschluss: Oberfläche sofort auffrischen, Schreibfehler
+  /// protokollieren statt die Bedienung zu blockieren. Der Bestand im Speicher
+  /// ist bereits geändert – ein fehlgeschlagener Schreibvorgang darf die
+  /// Anzeige nicht zurückwerfen.
+  void _write(Future<void> op) {
     notifyListeners();
+    op.catchError((Object e, StackTrace st) {
+      debugPrint('Stammdaten konnten nicht gespeichert werden: $e\n$st');
+    });
   }
 
   void _saveSession() {
@@ -513,52 +269,6 @@ class Store extends ChangeNotifier {
   void setDarkMode(bool v) {
     gDark.value = v;
     _p.setBool('darkMode', v);
-  }
-
-  Map<String, dynamic> _toJson() => {
-        'catalog': catalog.map((e) => e.toJson()).toList(),
-        'customers': customers.map((e) => e.toJson()).toList(),
-        'pauschalen': pauschalen.map((e) => e.toJson()).toList(),
-        'projects': projects.map((e) => e.toJson()).toList(),
-        'users': users.map((e) => e.toJson()).toList(),
-        'arten': arten,
-        'roles': roles,
-        'rolePerms': rolePerms,
-        'online': online,
-        'adminSeeded': _adminSeeded,
-        'rolesMigrated': _rolesMigrated,
-      };
-
-  void _fromJson(Map<String, dynamic> j) {
-    catalog = ((j['catalog'] ?? []) as List)
-        .map((e) => CatalogItem.fromJson(e))
-        .toList();
-    customers = ((j['customers'] ?? []) as List)
-        .map((e) => Customer.fromJson(e))
-        .toList();
-    pauschalen = ((j['pauschalen'] ?? []) as List)
-        .map((e) => Pauschale.fromJson(e))
-        .toList();
-    projects = ((j['projects'] ?? []) as List)
-        .map((e) => Project.fromJson(e))
-        .toList();
-    users =
-        ((j['users'] ?? []) as List).map((e) => AppUser.fromJson(e)).toList();
-    // Migration: ältere Datenstände ohne 'arten' bekommen die Standardliste.
-    final rawArten = (j['arten'] as List?)?.cast<String>();
-    arten = (rawArten == null || rawArten.isEmpty)
-        ? List.of(defaultArten)
-        : rawArten;
-    final rawRoles = (j['roles'] as List?)?.cast<String>();
-    roles = (rawRoles == null || rawRoles.isEmpty)
-        ? List.of(defaultRollen)
-        : rawRoles;
-    final rawPerms = (j['rolePerms'] as Map?) ?? {};
-    rolePerms = rawPerms.map((k, v) =>
-        MapEntry(k as String, ((v as List?) ?? const []).cast<String>()));
-    online = j['online'] ?? true;
-    _adminSeeded = j['adminSeeded'] ?? false;
-    _rolesMigrated = j['rolesMigrated'] ?? false;
   }
 
   List<CatalogItem> _defaultCatalog() => [
@@ -599,21 +309,15 @@ class Store extends ChangeNotifier {
         Pauschale(id: uid(), name: 'Kleinmaterial', amount: 30),
       ];
 
-  void _seed() {
-    catalog = _defaultCatalog();
-    users = _defaultUsers();
-    arten = List.of(defaultArten);
-    roles = List.of(defaultRollen);
-    rolePerms = _defaultRolePerms();
-    pauschalen = _defaultPauschalen();
-    _rolesMigrated = true;
+  /// Beispieldaten für den allerersten Start. Liefert den fertigen Bestand,
+  /// statt Felder zu setzen – so kann [load] ihn unverändert übernehmen.
+  MasterData _seed() {
     final kunde = Customer(
         id: uid(),
         name: 'Familie Müller',
         address: 'Müllerstr. 12, Speyer',
         contact: '0621 123456');
-    customers = [kunde];
-    projects = [
+    final projekte = [
       Project(
         id: uid(),
         name: 'Neubau Müllerstr. 12',
@@ -647,8 +351,20 @@ class Store extends ChangeNotifier {
         ],
       ),
     ];
-    online = true;
-    _adminSeeded = true;
+
+    return MasterData(
+      catalog: _defaultCatalog(),
+      customers: [kunde],
+      pauschalen: _defaultPauschalen(),
+      projects: projekte,
+      users: _defaultUsers(),
+      arten: List.of(defaultArten),
+      roles: List.of(defaultRollen),
+      rolePerms: _defaultRolePerms(),
+      online: true,
+      adminSeeded: true,
+      rolesMigrated: true,
+    );
   }
 
   // Auth
@@ -2273,7 +1989,7 @@ class ProjectScreen extends StatelessWidget {
                           icon: Icon(Icons.delete_outline, color: kMuted),
                           onPressed: () {
                             p.notes.removeAt(i);
-                            Store.I.save();
+                            Store.I.saveProject(p);
                           },
                         ),
                       ),
@@ -2286,7 +2002,7 @@ class ProjectScreen extends StatelessWidget {
                 OutlinedButton(
                   onPressed: () {
                     p.status = p.isOpen ? 'done' : 'active';
-                    Store.I.save();
+                    Store.I.saveProject(p);
                   },
                   child: Text(p.isOpen
                       ? 'Auftrag als abgeschlossen markieren'
@@ -2304,8 +2020,7 @@ class ProjectScreen extends StatelessWidget {
                     if (ok) {
                       // Der AnimatedBuilder-Guard oben schließt den Screen automatisch,
                       // sobald das Projekt entfernt ist (kein doppeltes pop).
-                      Store.I.projects.removeWhere((x) => x.id == p.id);
-                      Store.I.save();
+                      Store.I.removeProject(p.id);
                     }
                   },
                 ),
@@ -2387,7 +2102,7 @@ class ProjectScreen extends StatelessWidget {
                         final ok = await confirm(context, 'Foto löschen?');
                         if (ok) {
                           p.photos.remove(ph);
-                          Store.I.save();
+                          Store.I.saveProject(p);
                         }
                       },
                       child: Container(
@@ -2432,7 +2147,7 @@ class ProjectScreen extends StatelessWidget {
       if (x == null) return;
       final bytes = await x.readAsBytes();
       p.photos.add(base64Encode(bytes));
-      Store.I.save();
+      Store.I.saveProject(p);
     } catch (_) {
       if (context.mounted) {
         snack(context, 'Foto konnte nicht geladen werden.');
@@ -2481,7 +2196,7 @@ class HoursScreen extends StatelessWidget {
                                         color: kMuted),
                                     onPressed: () {
                                       p.hours.removeWhere((x) => x.id == h.id);
-                                      Store.I.save();
+                                      Store.I.saveProject(p);
                                     },
                                   ),
                                 ))
@@ -2551,7 +2266,7 @@ class MaterialsScreen extends StatelessWidget {
                                           onPressed: () {
                                             p.materials.removeWhere(
                                                 (x) => x.id == m.id);
-                                            Store.I.save();
+                                            Store.I.saveProject(p);
                                           },
                                         ),
                                       ]),
@@ -2608,7 +2323,7 @@ class TasksScreen extends StatelessWidget {
                                   leading: GestureDetector(
                                     onTap: () {
                                       t.done = !t.done;
-                                      Store.I.save();
+                                      Store.I.saveProject(p);
                                     },
                                     child: Icon(
                                         t.done
@@ -2631,7 +2346,7 @@ class TasksScreen extends StatelessWidget {
                                         color: kMuted),
                                     onPressed: () {
                                       p.tasks.removeWhere((x) => x.id == t.id);
-                                      Store.I.save();
+                                      Store.I.saveProject(p);
                                     },
                                   ),
                                 ))
@@ -2680,7 +2395,7 @@ class DefectsScreen extends StatelessWidget {
                                   leading: GestureDetector(
                                     onTap: () {
                                       d.done = !d.done;
-                                      Store.I.save();
+                                      Store.I.saveProject(p);
                                     },
                                     child: Icon(
                                         d.done
@@ -2705,7 +2420,7 @@ class DefectsScreen extends StatelessWidget {
                                     onPressed: () {
                                       p.defects
                                           .removeWhere((x) => x.id == d.id);
-                                      Store.I.save();
+                                      Store.I.saveProject(p);
                                     },
                                   ),
                                 ))
@@ -2842,8 +2557,7 @@ class _AdminSectionScreen extends StatelessWidget {
                         trailing: IconButton(
                           icon: Icon(Icons.delete_outline, color: kMuted),
                           onPressed: () {
-                            s.catalog.removeWhere((x) => x.id == c.id);
-                            s.save();
+                            s.removeCatalogItem(c.id);
                           },
                         ),
                       ))
@@ -2869,8 +2583,7 @@ class _AdminSectionScreen extends StatelessWidget {
                         trailing: IconButton(
                           icon: Icon(Icons.delete_outline, color: kMuted),
                           onPressed: () {
-                            s.pauschalen.removeWhere((x) => x.id == pa.id);
-                            s.save();
+                            s.removePauschale(pa.id);
                           },
                         ),
                       ))
@@ -2997,7 +2710,7 @@ class _AdminSectionScreen extends StatelessWidget {
     final ok = await confirm(context, 'Kategorie „$a" wirklich löschen?');
     if (ok) {
       s.arten.remove(a);
-      s.save();
+      s.saveSettings();
     }
   }
 
@@ -3013,8 +2726,7 @@ class _AdminSectionScreen extends StatelessWidget {
     }
     final ok = await confirm(context, 'Benutzer wirklich löschen?');
     if (ok) {
-      Store.I.users.removeWhere((x) => x.id == u.id);
-      Store.I.save();
+      Store.I.removeUser(u.id);
     }
   }
 
@@ -3035,7 +2747,7 @@ class _AdminSectionScreen extends StatelessWidget {
     if (ok) {
       s.roles.remove(r);
       s.rolePerms.remove(r);
-      s.save();
+      s.saveSettings();
     }
   }
 }
@@ -3776,8 +3488,9 @@ void showPinForm(BuildContext context) {
               snack(ctx, 'Bitte 4 Ziffern eingeben.');
               return;
             }
-            Store.I.currentUser!.pin = v;
-            Store.I.save();
+            final me = Store.I.currentUser!;
+            me.pin = v;
+            Store.I.saveUser(me);
             Navigator.pop(ctx);
           }),
         ]);
@@ -3848,21 +3561,22 @@ void showProjectForm(BuildContext context) {
             ]),
             _saveBtn('Auftrag anlegen', () {
               if (name.text.trim().isEmpty) return;
-              Store.I.projects.insert(
-                  0,
-                  Project(
-                      id: uid(),
-                      name: name.text.trim(),
-                      type: type,
-                      address: addr.text.trim(),
-                      status: 'active',
-                      date: date,
-                      due: due,
-                      customerId: customerId,
-                      hours: [],
-                      materials: [],
-                      tasks: []));
-              Store.I.save();
+              // Vorne einsortieren, damit der neue Auftrag oben in der Liste
+              // steht – das Speichern findet ihn dann bereits vor.
+              final neu = Project(
+                  id: uid(),
+                  name: name.text.trim(),
+                  type: type,
+                  address: addr.text.trim(),
+                  status: 'active',
+                  date: date,
+                  due: due,
+                  customerId: customerId,
+                  hours: [],
+                  materials: [],
+                  tasks: []);
+              Store.I.projects.insert(0, neu);
+              Store.I.saveProject(neu);
               Navigator.pop(ctx);
             }),
           ]);
@@ -3919,7 +3633,7 @@ void showNoteForm(BuildContext context, Project p) {
                               text: text.text.trim(),
                               weather: w.desc,
                               temp: w.temp));
-                          Store.I.save();
+                          Store.I.saveProject(p);
                           if (ctx.mounted) Navigator.pop(ctx);
                         },
                   child: Padding(
@@ -3983,7 +3697,7 @@ void showHoursForm(BuildContext context, Project p) {
                   task: task.text.trim(),
                   h: double.tryParse(hrs.text.replaceAll(',', '.')) ?? 0,
                   synced: Store.I.online));
-              Store.I.save();
+              Store.I.saveProject(p);
               Navigator.pop(ctx);
             }),
           ]);
@@ -4038,7 +3752,7 @@ void showMaterialForm(BuildContext context, Project p) {
                   qty: double.tryParse(qty.text.replaceAll(',', '.')) ?? 0,
                   price: sel!.price,
                   synced: Store.I.online));
-              Store.I.save();
+              Store.I.saveProject(p);
               Navigator.pop(ctx);
             }),
           ]);
@@ -4065,7 +3779,7 @@ void showTaskForm(BuildContext context, Project p) {
             if (title.text.trim().isEmpty) return;
             p.tasks.add(Task(
                 id: uid(), title: title.text.trim(), due: '', done: false));
-            Store.I.save();
+            Store.I.saveProject(p);
             Navigator.pop(ctx);
           }),
         ]);
@@ -4107,7 +3821,7 @@ void showDefectForm(BuildContext context, Project p, Defect? existing) {
                   description: desc.text.trim(),
                   date: today()));
             }
-            Store.I.save();
+            Store.I.saveProject(p);
             Navigator.pop(ctx);
           }),
         ]);
@@ -4148,11 +3862,15 @@ void showCategoryForm(BuildContext context, String? existing) {
             final i = s.arten.indexOf(existing);
             if (i >= 0) s.arten[i] = name;
             // Vorhandene Aufträge mit der alten Bezeichnung mit umbenennen.
-            for (final p in s.projects.where((p) => p.type == existing)) {
+            // Jeder betroffene Auftrag wird einzeln gespeichert – ein Backend
+            // bekommt die Umbenennung sonst nie zu sehen.
+            for (final p
+                in s.projects.where((p) => p.type == existing).toList()) {
               p.type = name;
+              s.saveProject(p);
             }
           }
-          s.save();
+          s.saveSettings();
           Navigator.pop(ctx);
         }),
       ],
@@ -4196,15 +3914,18 @@ void showCatalogForm(BuildContext context, CatalogItem? c) {
             _saveBtn('Speichern', () {
               if (name.text.trim().isEmpty) return;
               final pr = double.tryParse(price.text.replaceAll(',', '.')) ?? 0;
+              final CatalogItem eintrag;
               if (c != null) {
                 c.name = name.text.trim();
                 c.unit = unit;
                 c.price = pr;
+                eintrag = c;
               } else {
-                Store.I.catalog.add(CatalogItem(
-                    id: uid(), name: name.text.trim(), unit: unit, price: pr));
+                eintrag = CatalogItem(
+                    id: uid(), name: name.text.trim(), unit: unit, price: pr);
+                Store.I.catalog.add(eintrag);
               }
-              Store.I.save();
+              Store.I.saveCatalogItem(eintrag);
               Navigator.pop(ctx);
             }),
           ]);
@@ -4240,18 +3961,21 @@ void showCustomerForm(BuildContext context, Customer? existing) {
               decoration: const InputDecoration(hintText: 'z. B. 0621 123456')),
           _saveBtn('Speichern', () {
             if (name.text.trim().isEmpty) return;
+            final Customer kunde;
             if (existing != null) {
               existing.name = name.text.trim();
               existing.address = addr.text.trim();
               existing.contact = contact.text.trim();
+              kunde = existing;
             } else {
-              Store.I.customers.add(Customer(
+              kunde = Customer(
                   id: uid(),
                   name: name.text.trim(),
                   address: addr.text.trim(),
-                  contact: contact.text.trim()));
+                  contact: contact.text.trim());
+              Store.I.customers.add(kunde);
             }
-            Store.I.save();
+            Store.I.saveCustomer(kunde);
             Navigator.pop(ctx);
           }),
         ]);
@@ -4285,14 +4009,17 @@ void showPauschaleForm(BuildContext context, Pauschale? existing) {
             if (name.text.trim().isEmpty) return;
             final a =
                 double.tryParse(amount.text.trim().replaceAll(',', '.')) ?? 0;
+            final Pauschale pauschale;
             if (existing != null) {
               existing.name = name.text.trim();
               existing.amount = a;
+              pauschale = existing;
             } else {
-              Store.I.pauschalen
-                  .add(Pauschale(id: uid(), name: name.text.trim(), amount: a));
+              pauschale =
+                  Pauschale(id: uid(), name: name.text.trim(), amount: a);
+              Store.I.pauschalen.add(pauschale);
             }
-            Store.I.save();
+            Store.I.savePauschale(pauschale);
             Navigator.pop(ctx);
           }),
         ]);
@@ -4337,11 +4064,14 @@ void showRoleForm(BuildContext context, String? existing) {
             final i = s.roles.indexOf(existing);
             if (i >= 0) s.roles[i] = name;
             s.rolePerms[name] = s.rolePerms.remove(existing) ?? [];
-            for (final u in s.users.where((u) => u.role == existing)) {
+            // Betroffene Benutzer einzeln nachziehen, sonst zeigt ihr
+            // Datensatz weiterhin auf eine Rolle, die es nicht mehr gibt.
+            for (final u in s.users.where((u) => u.role == existing).toList()) {
               u.role = name;
+              s.saveUser(u);
             }
           }
-          s.save();
+          s.saveSettings();
           Navigator.pop(ctx);
         }),
       ],
@@ -4405,7 +4135,7 @@ void showRolePermsForm(BuildContext context, String role) {
               ),
               _saveBtn('Speichern', () {
                 Store.I.rolePerms[role] = sel.toList();
-                Store.I.save();
+                Store.I.saveSettings();
                 Navigator.pop(ctx);
               }),
             ],
@@ -4471,20 +4201,23 @@ void showUserForm(BuildContext context, AppUser? u) {
                           wageCtrl.text.trim().replaceAll(',', '.')) ??
                       0)
                   : null;
+              final AppUser benutzer;
               if (u != null) {
                 u.name = name.text.trim();
                 u.role = role;
                 u.pin = pin.text.trim();
                 if (w != null) u.wage = w;
+                benutzer = u;
               } else {
-                Store.I.users.add(AppUser(
+                benutzer = AppUser(
                     id: uid(),
                     name: name.text.trim(),
                     role: role,
                     pin: pin.text.trim(),
-                    wage: w ?? 0));
+                    wage: w ?? 0);
+                Store.I.users.add(benutzer);
               }
-              Store.I.save();
+              Store.I.saveUser(benutzer);
               Navigator.pop(ctx);
             }),
           ]);
