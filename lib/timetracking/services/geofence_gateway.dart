@@ -101,10 +101,15 @@ abstract class GeofenceGateway {
 
   /// Geofence registrieren. Mehrfachaufrufe für dieselbe [orderId] ersetzen
   /// den bestehenden Eintrag.
+  ///
+  /// [orderName] wird mitgegeben, weil die Ankunftsmeldung auf Android in
+  /// einem eigenen Isolat entsteht, das den Auftragsbestand nicht kennt –
+  /// ohne den Namen hieße die Meldung nur „Auftrag“.
   Future<void> registerGeofence({
     required String orderId,
     required GeoPoint center,
     required double radiusMeters,
+    String orderName = 'Auftrag',
   });
 
   Future<void> removeGeofence(String orderId);
@@ -142,6 +147,7 @@ class NoopGeofenceGateway implements GeofenceGateway {
     required String orderId,
     required GeoPoint center,
     required double radiusMeters,
+    String orderName = 'Auftrag',
   }) async {}
 
   @override

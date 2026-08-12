@@ -10,6 +10,7 @@ import 'weather.dart';
 
 // Zeiterfassung (eigenes Modul unter lib/timetracking/).
 import 'timetracking/tracking_bridge.dart';
+import 'timetracking/ui/tracking_permissions_ui.dart';
 import 'timetracking/ui/tracking_ui.dart';
 // Auswertung der Stunden über alle Aufträge (lib/timesheet/).
 import 'timesheet/timesheet_screen.dart';
@@ -483,6 +484,12 @@ class Store extends ChangeNotifier {
       }
     }
     if (permsChanged) save();
+    // Frisch geseedete Daten einmal festschreiben. `_seed()` setzt selbst
+    // `_adminSeeded` und `_rolesMigrated` und füllt `rolePerms` – dadurch
+    // greift oben keine der drei `save()`-Bedingungen, und es landete nie
+    // etwas auf der Platte. Folge: bei jedem Start neue Auftrags-IDs, während
+    // die Zeiterfassung ihre Sitzung sehr wohl behält.
+    if (!ok) save();
     sessionId = _p.getString(_skey);
   }
 
@@ -3648,6 +3655,26 @@ void showProfileSheet(BuildContext context) {
                 RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           ),
           const SizedBox(height: 8),
+          // Automatische Ankunftserkennung. Nur dort anbieten, wo die
+          // Plattform sie überhaupt kann – in der Web-Fassung gibt es kein
+          // Hintergrund-Geofencing, ein toter Menüpunkt wäre irreführend.
+          if (gTracking.supportsAutomaticTracking) ...[
+            ListTile(
+              onTap: () async {
+                Navigator.pop(ctx);
+                await showAutoTrackingSetup(context);
+              },
+              leading: Icon(Icons.my_location, color: kAccent),
+              title: const Text('Ankunft automatisch erfassen'),
+              subtitle: Text(
+                  'Nachfragen, sobald die Baustelle erreicht ist',
+                  style: TextStyle(color: kMuted, fontSize: 12)),
+              tileColor: kCard,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14)),
+            ),
+            const SizedBox(height: 8),
+          ],
           if (Store.I.can('exportDocs')) ...[
             ListTile(
               onTap: () async {

@@ -28,6 +28,10 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // flutter_local_notifications braucht die neueren java.time-Klassen
+        // auch auf aelteren Android-Versionen (minSdk 24). Ohne das bricht
+        // schon :app:checkReleaseAarMetadata ab.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     defaultConfig {
@@ -62,6 +66,10 @@ android {
             }
         }
     }
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }
 
 kotlin {

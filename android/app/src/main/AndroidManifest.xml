@@ -4,12 +4,35 @@
          Netzaufruf stumm scheiterte. -->
     <uses-permission android:name="android.permission.INTERNET"/>
 
-    <!-- Standort fuer das automatisch ermittelte Wetter (lib/weather.dart nutzt
-         LocationAccuracy.low, dafuer genuegt der ungefaehre Standort).
-         geolocator bringt die Berechtigung nicht selbst mit.
-         Fuer die geplante Ankunftserkennung per Geofence waere zusaetzlich
-         ACCESS_FINE_LOCATION noetig. -->
+    <!-- Standort. Der ungefaehre genuegt fuer das Wetter im Bautagebuch
+         (lib/weather.dart, LocationAccuracy.low); Geofencing verlangt
+         zwingend den genauen. geolocator bringt beides nicht selbst mit. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+
+    <!-- Ankunftserkennung bei geschlossener App. Muss vom Nutzer GETRENNT und
+         NACH der Standortfreigabe erteilt werden (Android 11+ lehnt eine
+         kombinierte Abfrage stillschweigend ab), siehe
+         AndroidGeofenceGateway.requestPermission.
+         Achtung Play-Veroeffentlichung: diese Berechtigung ist
+         genehmigungspflichtig und verlangt ein Formular samt Video. Im
+         internen Testkanal entfaellt das. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+
+    <!-- Ab Android 13 muss der Nutzer Benachrichtigungen erlauben; ohne sie
+         kaeme weder die Ankunftsfrage noch die Pausenerinnerung an. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+    <!-- Geplante Alarme (Pausenende, Vorwarnung, Kappung) ueberstehen einen
+         Geraeteneustart nur mit diesem Recht; Androids Geofences muessen nach
+         dem Booten ohnehin neu gesetzt werden. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+
+    <!-- Punktgenaue Alarme. Ohne sie verschiebt das System die
+         Pausenerinnerung um bis zu eine Viertelstunde. USE_EXACT_ALARM gilt
+         ab Android 14 ohne Nachfrage, SCHEDULE_EXACT_ALARM davor. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
 
     <application
         android:label="BauDoc"

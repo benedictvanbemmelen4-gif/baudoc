@@ -19,6 +19,7 @@ import '../models/tracking_state.dart';
 import '../data/tracking_repository.dart';
 import 'geofence_gateway.dart';
 import 'notification_gateway.dart';
+import 'running_indicator_gateway.dart';
 
 /// Die Auftragsdaten, die die Zeiterfassung braucht. Wird per Callback aus der
 /// Haupt-App geliefert, damit dieses Modul main.dart nicht importieren muss
@@ -41,6 +42,11 @@ class TimeTrackingController extends ChangeNotifier {
   final TrackingRepository repository;
   final GeofenceGateway geofence;
   final NotificationGateway notifications;
+
+  /// Sichtbarer Hinweis auf den laufenden Timer. Vorbelegt, damit bestehende
+  /// Aufrufer und Tests unverändert bleiben.
+  final RunningIndicatorGateway runningIndicator;
+
   final TimeTrackingMachine machine;
 
   /// Liefert den aktuell angemeldeten Mitarbeiter.
@@ -61,6 +67,7 @@ class TimeTrackingController extends ChangeNotifier {
     required this.currentUserId,
     required this.orderLookup,
     this.onEntryCompleted,
+    this.runningIndicator = const NoopRunningIndicator(),
     TimeTrackingMachine? machine,
   }) : machine = machine ??
             TimeTrackingMachine(
@@ -73,6 +80,10 @@ class TimeTrackingController extends ChangeNotifier {
   TrackingSession? _session;
   List<TimeEntry> _entries = const [];
   bool _ready = false;
+
+  /// Hinweis, wenn ein Effekt nicht ausgeführt werden konnte (z. B. fehlende
+  /// Standortfreigabe). Nur informativ – der Timer läuft trotzdem.
+  String? _degradedHint;
 
   /// Serialisiert Ereignisse. Zwei gleichzeitig eintreffende Geofence-
   /// Meldungen dürfen sich nicht überholen, sonst entstehen Doppeleinträge.
@@ -88,6 +99,9 @@ class TimeTrackingController extends ChangeNotifier {
 
   bool get isTracking => state.isActive;
   bool get needsAttention => state.needsAttention;
+
+  /// Warnung für die Oberfläche, wenn Teile der Automatik nicht laufen.
+  String? get degradedHint => _degradedHint;
 
   /// Einträge, die Büro/Meister prüfen müssen.
   List<TimeEntry> get entriesNeedingReview => _entries
@@ -129,9 +143,37 @@ class TimeTrackingController extends ChangeNotifier {
     // ist der Alarm nie ausgelöst worden. Beim nächsten Start nachziehen –
     // sonst läuft ein vergessener Timer tagelang weiter.
     await _catchUpSafetyCap();
+    await _recoverOrphanedSession();
 
     _ready = true;
     notifyListeners();
+  }
+
+  /// Rettet eine Sitzung, deren Auftrag es nicht mehr gibt (gelöscht oder
+  /// beim Zurücksetzen der Stammdaten neu vergebene IDs).
+  ///
+  /// Ohne das bleibt der Timer unstoppbar: die Auftragskarte zeigt für *jeden*
+  /// Auftrag „Es läuft bereits eine Zeit auf einem anderen Auftrag“, und der
+  /// Auftrag, zu dem der Knopf gehören würde, existiert nicht mehr. Der
+  /// Eintrag wird deshalb abgeschlossen und zur Prüfung markiert – die Zeit
+  /// geht nicht verloren, das Büro sieht sie im Prüf-Bildschirm.
+  Future<void> _recoverOrphanedSession() async {
+    final s = _session;
+    if (s == null || !s.state.isActive) return;
+    if (orderLookup(s.entry.orderId) != null) return;
+
+    debugPrint('Zeiterfassung: Auftrag ${s.entry.orderId} existiert nicht '
+        'mehr – Sitzung wird abgeschlossen und zur Prüfung markiert.');
+
+    // Über die Kappung, weil sie den Eintrag als prüfbedürftig kennzeichnet:
+    // eine Zeit ohne Auftrag darf nicht stillschweigend als bestätigt gelten.
+    final now = DateTime.now();
+    final capped = TrackingRules.cappedEndTime(s.entry.startTime);
+    await _dispatch(AutoSafetyCapTriggered(
+      capped.isBefore(now) ? capped : now,
+      now,
+    ));
+    await _dispatch(EntryFinalized(now, breakMinutes: 0));
   }
 
   Future<void> _catchUpSafetyCap() async {
@@ -169,9 +211,34 @@ class TimeTrackingController extends ChangeNotifier {
       orderId: order.id,
       center: center,
       radiusMeters: TrackingRules.geofenceRadiusMeters,
+      orderName: order.name,
     );
     return true;
   }
+
+  // ---- Berechtigungen -----------------------------------------------------
+  //
+  // Die Oberfläche fragt hierüber statt direkt an den Gateways vorbei, damit
+  // sie nichts über die Plattform wissen muss.
+
+  /// Kann die automatische Erkennung auf diesem Gerät überhaupt laufen?
+  bool get supportsAutomaticTracking => geofence.isSupported;
+
+  Future<LocationPermissionResult> checkLocationPermission() =>
+      geofence.checkPermission();
+
+  /// Fordert die Standortfreigabe an.
+  ///
+  /// [includeBackground] erst setzen, wenn „während der Nutzung“ bereits
+  /// erteilt ist – Android 11+ lehnt eine kombinierte Abfrage stillschweigend
+  /// ab, siehe geofence_gateway.dart.
+  Future<LocationPermissionResult> requestLocationPermission({
+    bool includeBackground = false,
+  }) =>
+      geofence.requestPermission(includeBackground: includeBackground);
+
+  Future<bool> requestNotificationPermission() =>
+      notifications.requestPermission();
 
   Future<void> startManually(String orderId) =>
       _dispatch(ManualStartRequested(orderId, DateTime.now()));
@@ -308,13 +375,43 @@ class TimeTrackingController extends ChangeNotifier {
     await repository.saveSession(toStore);
     if (toStore == null) _session = null;
 
+    // Jeder Effekt wird einzeln abgesichert. Vorher riss ein einziger Fehler
+    // – etwa eine abgelehnte Standortfreigabe beim Registrieren des Geofence –
+    // die ganze Schleife ab: die danach folgenden Sicherheitsalarme wurden nie
+    // gestellt und `notifyListeners()` am Ende nie erreicht, sodass die
+    // Oberfläche den bereits laufenden Timer nicht anzeigte.
     for (final effect in result.effects) {
-      await _runEffect(effect);
+      try {
+        await _runEffect(effect);
+        if (effect is RegisterGeofence) _degradedHint = null;
+      } catch (e, st) {
+        debugPrint('Zeiterfassung: Effekt fehlgeschlagen ($effect): $e\n$st');
+        _degradedHint = _hintFor(effect) ?? _degradedHint;
+      }
     }
+
+    // Ohne laufende Sitzung gibt es nichts mehr zu warnen.
+    if (_session == null) _degradedHint = null;
 
     _entries = await repository.loadEntries();
     notifyListeners();
   }
+
+  /// Klartext für die Oberfläche, wenn ein Effekt nicht ausgeführt werden
+  /// konnte. Der Timer selbst läuft korrekt weiter – nur die Automatik nicht.
+  static String? _hintFor(TrackingEffect effect) => switch (effect) {
+        RegisterGeofence() => 'Automatische Erkennung nicht aktiv – die Zeit '
+            'muss von Hand gestoppt werden.',
+        ScheduleSafetyWarning() ||
+        ScheduleSafetyCap() ||
+        SchedulePauseReminder() =>
+          'Erinnerungen konnten nicht gestellt werden – bitte selbst an den '
+              'Feierabend denken.',
+        ShowArrivalNotification() ||
+        ShowDepartureNotification() =>
+          'Benachrichtigungen sind nicht erlaubt.',
+        _ => null,
+      };
 
   Future<void> _runEffect(TrackingEffect effect) async {
     switch (effect) {
@@ -370,15 +467,24 @@ class TimeTrackingController extends ChangeNotifier {
           orderId: orderId,
           center: center,
           radiusMeters: TrackingRules.geofenceRadiusMeters,
+          orderName: order.name,
         );
 
       case RemoveGeofence(:final orderId):
         await geofence.removeGeofence(orderId);
 
-      case StartForegroundService():
+      case StartForegroundService(:final orderId):
+        // Kein echter Vordergrunddienst mehr, sondern eine feste
+        // Benachrichtigung – die Begründung steht in
+        // running_indicator_gateway.dart.
+        final start = _session?.entry.startTime ?? DateTime.now();
+        await runningIndicator.showRunning(
+          orderName: orderLookup(orderId)?.name ?? 'Auftrag',
+          since: start,
+        );
+
       case StopForegroundService():
-        // Vom Android-Gateway umgesetzt; auf anderen Plattformen wirkungslos.
-        break;
+        await runningIndicator.hideRunning();
     }
   }
 

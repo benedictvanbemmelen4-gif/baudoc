@@ -31,9 +31,11 @@ import '../../main.dart'
 import '../core/tracking_rules.dart';
 import '../models/time_entry.dart';
 import '../models/tracking_state.dart';
+import '../services/geofence_gateway.dart' show LocationPermissionResultX;
 import '../services/navigation_launcher.dart';
 import '../services/time_tracking_controller.dart';
 import '../tracking_bridge.dart';
+import 'tracking_permissions_ui.dart';
 
 // ---------------------------------------------------------------------------
 // Formatierung
@@ -519,6 +521,18 @@ class ProjectTrackingCard extends StatelessWidget {
                           TextStyle(fontSize: 11.5, color: kWarn, height: 1.3),
                     ),
                   ),
+                // Läuft die Zeit, aber ein Teil der Automatik nicht, muss das
+                // sichtbar sein: sonst verlässt sich der Monteur auf eine
+                // Erkennung, die gar nicht scharf ist.
+                if (runsHere && gTracking.degradedHint != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      gTracking.degradedHint!,
+                      style:
+                          TextStyle(fontSize: 11.5, color: kWarn, height: 1.3),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -535,9 +549,10 @@ class ProjectTrackingCard extends StatelessWidget {
       return;
     }
 
-    final armed = await gTracking.armGeofenceForNavigation(
-      TrackedOrder(id: project.id, name: project.name, address: address),
-    );
+    final order =
+        TrackedOrder(id: project.id, name: project.name, address: address);
+
+    var armed = await gTracking.armGeofenceForNavigation(order);
     final opened = await NavigationLauncher.navigateTo(address);
 
     if (!context.mounted) return;
@@ -545,10 +560,34 @@ class ProjectTrackingCard extends StatelessWidget {
       snack(context, 'Es konnte keine Karten-App geöffnet werden.');
       return;
     }
-    if (!armed) {
+    if (armed) return;
+
+    // Nicht scharfgeschaltet. Fehlen nur die Berechtigungen, ist das
+    // behebbar – dann die Einrichtung anbieten, statt den Monteur mit einem
+    // Hinweis abzuspeisen, aus dem er nicht schließen kann, was zu tun ist.
+    if (!gTracking.supportsAutomaticTracking) {
       snack(context,
           'Zielführung gestartet. Die Ankunft bitte manuell erfassen.');
+      return;
     }
+
+    final permission = await gTracking.checkLocationPermission();
+    if (!context.mounted) return;
+
+    if (!permission.allowsBackground) {
+      final granted = await showAutoTrackingSetup(context);
+      if (granted) {
+        armed = await gTracking.armGeofenceForNavigation(order);
+      }
+      if (!context.mounted) return;
+      if (armed) {
+        snack(context, 'Ankunft wird jetzt automatisch erkannt.');
+        return;
+      }
+    }
+
+    snack(context,
+        'Zielführung gestartet. Die Ankunft bitte manuell erfassen.');
   }
 }
 

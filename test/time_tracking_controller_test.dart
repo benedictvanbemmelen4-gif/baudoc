@@ -59,6 +59,11 @@ class FakeGeofence implements GeofenceGateway {
   final List<String> registered = [];
   GeofenceCallback? _cb;
 
+  /// Simuliert, was Play services auf einem echten Gerät tut, wenn die
+  /// Standortfreigabe fehlt: es wirft. Die Zeiterfassung darf daran nicht
+  /// zerbrechen.
+  bool failRegister = false;
+
   void enter(String orderId, DateTime at) => _cb?.call(orderId, true, at);
   void exit(String orderId, DateTime at) => _cb?.call(orderId, false, at);
 
@@ -78,13 +83,23 @@ class FakeGeofence implements GeofenceGateway {
   Future<GeoPoint?> resolveAddress(String address) async =>
       const GeoPoint(52.0, 13.0);
 
+  /// Auftragsnamen, mit denen ein Zaun registriert wurde. Auf Android landet
+  /// der Name in der Meldung, die das Hintergrund-Isolat zeigt – ein leerer
+  /// Name faellt dort erst auf dem Geraet auf.
+  final Map<String, String> registeredNames = {};
+
   @override
   Future<void> registerGeofence({
     required String orderId,
     required GeoPoint center,
     required double radiusMeters,
+    String orderName = 'Auftrag',
   }) async {
+    if (failRegister) {
+      throw StateError('GEOFENCE_NOT_AVAILABLE');
+    }
     if (!registered.contains(orderId)) registered.add(orderId);
+    registeredNames[orderId] = orderName;
   }
 
   @override
@@ -156,13 +171,18 @@ void main() {
   late List<TimeEntry> completed;
   late TimeTrackingController c;
 
+  /// Aufträge, die es nicht (mehr) gibt – gelöscht oder mit neuer ID.
+  late Set<String> missingOrders;
+
   TimeTrackingController build() => TimeTrackingController(
         repository: repo,
         geofence: geo,
         notifications: push,
         currentUserId: () => 'u1',
-        orderLookup: (id) => TrackedOrder(
-            id: id, name: 'Baustelle $id', address: 'Musterweg 1'),
+        orderLookup: (id) => missingOrders.contains(id)
+            ? null
+            : TrackedOrder(
+                id: id, name: 'Baustelle $id', address: 'Musterweg 1'),
         onEntryCompleted: completed.add,
       );
 
@@ -171,6 +191,7 @@ void main() {
     geo = FakeGeofence();
     push = FakeNotifications();
     completed = [];
+    missingOrders = {};
     c = build();
     await c.init();
   });
@@ -276,6 +297,62 @@ void main() {
       expect(restarted.currentEntry!.isAutoCapped, isTrue);
       expect(restarted.currentEntry!.status, TimeEntryStatus.flaggedForReview);
       expect(restarted.state, TimeTrackingState.stoppedUnconfirmed);
+    });
+  });
+
+  group('Fehlertoleranz', () {
+    test('scheiternder Geofence stoppt die restlichen Effekte nicht', () async {
+      geo.failRegister = true;
+      await c.startManually('a1');
+
+      // Der Timer läuft – und die Oberfläche erfährt davon.
+      expect(c.isTracking, isTrue);
+      expect(c.currentEntry!.orderId, 'a1');
+      // Entscheidend: die Sicherheitsalarme kommen *nach* dem Geofence in der
+      // Effektliste. Vorher fielen sie mit aus, und der vergessene Timer lief
+      // die ganze Nacht durch.
+      expect(push.shown, contains('safety'));
+      // Und der Monteur sieht, dass die Automatik nicht scharf ist.
+      expect(c.degradedHint, isNotNull);
+    });
+
+    test('Hinweis verschwindet, sobald der Geofence wieder steht', () async {
+      geo.failRegister = true;
+      await c.startManually('a1');
+      expect(c.degradedHint, isNotNull);
+
+      await c.stop();
+      await c.finalizeEntry(breakMinutes: 0);
+      geo.failRegister = false;
+      await c.startManually('a1');
+
+      expect(c.degradedHint, isNull);
+    });
+
+    test('Sitzung auf einem gelöschten Auftrag blockiert die App nicht',
+        () async {
+      // Genau der Fall aus dem Gerätetest: die Sitzung überlebt, der Auftrag
+      // nicht. Ohne Aufräumen ist der Timer unstoppbar.
+      repo.session = TrackingSession(
+        state: TimeTrackingState.trackingConfirmed,
+        entry: TimeEntry(
+          id: 'verwaist',
+          orderId: 'weg',
+          userId: 'u1',
+          startTime: DateTime.now().subtract(const Duration(hours: 1)),
+          status: TimeEntryStatus.confirmed,
+        ),
+      );
+      missingOrders = {'weg'};
+
+      final restarted = build();
+      await restarted.init();
+
+      expect(restarted.state, TimeTrackingState.idle);
+      expect(repo.session, isNull);
+      // Die Zeit ist nicht verloren, sondern liegt beim Büro auf dem Tisch.
+      expect(restarted.entriesNeedingReview, hasLength(1));
+      expect(completed.single.status, TimeEntryStatus.flaggedForReview);
     });
   });
 

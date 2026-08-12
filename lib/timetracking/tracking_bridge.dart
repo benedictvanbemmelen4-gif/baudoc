@@ -14,11 +14,14 @@ import 'package:flutter/foundation.dart';
 import '../main.dart' show Store, WorkHours;
 import 'data/prefs_tracking_repository.dart';
 import 'models/time_entry.dart';
-import 'services/geofence_gateway.dart';
-import 'services/notification_gateway.dart';
+import 'platform/tracking_gateways.dart';
 import 'services/time_tracking_controller.dart';
 
 TimeTrackingController? _controller;
+
+/// Die Plattform-Umsetzungen dieser App. Einmal aufgebaut, damit die
+/// Nachhol-Aufrufe nach `init()` dieselben Objekte treffen wie der Controller.
+TrackingGateways? _gateways;
 
 /// Der Controller der App. Wird beim ersten Zugriff erzeugt, ist aber erst
 /// nach [initTimeTracking] mit Daten befüllt (`isReady`).
@@ -35,34 +38,31 @@ TimeTrackingController get gTracking => _controller ??= _build();
 Future<void> initTimeTracking() async {
   try {
     await gTracking.init();
+    // Erst nach init(): dort setzt der Controller seine Rückmelder. Vorher
+    // eingespielte Ereignisse liefen ins Leere.
+    await _gateways?.afterControllerInit();
   } catch (e, st) {
     debugPrint('Zeiterfassung konnte nicht starten: $e\n$st');
   }
 }
 
-TimeTrackingController _build() => TimeTrackingController(
-      repository: PrefsTrackingRepository(),
-      geofence: _geofenceGateway(),
-      notifications: _notificationGateway(),
-      currentUserId: () => Store.I.currentUser?.id ?? '',
-      orderLookup: _lookupOrder,
-      onEntryCompleted: _writeToWorkHours,
-    );
+TimeTrackingController _build() {
+  // Auf Android die echten Umsetzungen, sonst die wirkungslosen – die Auswahl
+  // trifft platform/tracking_gateways.dart. Für Web und Desktop bedeutet das:
+  // die manuelle Erfassung läuft vollständig, nur die automatische
+  // Ankunftserkennung entfällt.
+  final gateways = _gateways ??= buildTrackingGateways();
 
-// ---------------------------------------------------------------------------
-// Plattform-Auswahl
-// ---------------------------------------------------------------------------
-
-// Hintergrund-Geofencing und lokale Push mit Aktions-Buttons gibt es nur
-// nativ. Solange die Android-Umsetzung fehlt, greifen die No-Op-Varianten:
-// die manuelle Erfassung (Start, Pause, Feierabend) funktioniert damit
-// vollständig, nur die *automatische* Ankunftserkennung entfällt.
-//
-// Für Android hier später die konkreten Gateways einsetzen – am Rest der App
-// ändert sich dadurch nichts.
-GeofenceGateway _geofenceGateway() => NoopGeofenceGateway();
-
-NotificationGateway _notificationGateway() => NoopNotificationGateway();
+  return TimeTrackingController(
+    repository: PrefsTrackingRepository(),
+    geofence: gateways.geofence,
+    notifications: gateways.notifications,
+    runningIndicator: gateways.runningIndicator,
+    currentUserId: () => Store.I.currentUser?.id ?? '',
+    orderLookup: _lookupOrder,
+    onEntryCompleted: _writeToWorkHours,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Auftragsdaten
