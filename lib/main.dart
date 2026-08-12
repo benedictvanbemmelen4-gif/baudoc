@@ -1,7 +1,11 @@
 import 'dart:convert';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+// Zugangsdaten des Firebase-Projekts, erzeugt von `flutterfire configure`.
+import 'firebase_options.dart';
 
 // Plattform-spezifischer Datei-Export (Web-Download vs. Teilen-Dialog).
 import 'csv_export_io.dart' if (dart.library.js_interop) 'csv_export_web.dart';
@@ -715,10 +719,28 @@ Color tradeColor(String type) {
 // ===================================================================
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await _initFirebase();
   await Store.I.load();
   // Stellt einen laufenden Timer nach App-Neustart oder OS-Kill wieder her.
   await initTimeTracking();
   runApp(const BauDocApp());
+}
+
+/// Grundverbindung zum Firebase-Projekt. Muss vor allem anderen stehen, weil
+/// Anmeldung und Datenbank später darauf aufbauen.
+///
+/// Fehler werden geschluckt – wie bei [initTimeTracking]: die App muss auch
+/// ohne Netz oder mit kaputter Konfiguration starten, sonst kommt der Monteur
+/// auf der Baustelle nicht an seine Aufträge. Solange die Daten lokal liegen,
+/// ist der Betrieb davon ohnehin nicht betroffen.
+Future<void> _initFirebase() async {
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e, st) {
+    debugPrint('Firebase konnte nicht starten: $e\n$st');
+  }
 }
 
 class BauDocApp extends StatelessWidget {

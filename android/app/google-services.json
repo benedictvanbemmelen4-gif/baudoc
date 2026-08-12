@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "561002074373",
+    "project_id": "baudoc-c54a9",
+    "storage_bucket": "baudoc-c54a9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:561002074373:android:7b8ac388cc275d192e276c",
+        "android_client_info": {
+          "package_name": "de.baudoc.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA06hhVsOE7zy3qUqA_s4W_zrBHdBxr2FQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

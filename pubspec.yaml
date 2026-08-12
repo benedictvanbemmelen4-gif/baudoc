@@ -37,6 +37,12 @@ dependencies:
   # Baustellenadresse → Koordinaten für den Geofence.
   geocoding: ^5.0.0
 
+  # ---- Backend (Firebase-Projekt baudoc-c54a9) ----
+  # Nur die Grundverbindung. Anmeldung, Datenbank und Dateiablage kommen in
+  # eigenen Schritten dazu – siehe die Zugangsdaten in lib/firebase_options.dart
+  # (enthält keine Geheimnisse und gehört bewusst ins Repository).
+  firebase_core: ^4.13.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
